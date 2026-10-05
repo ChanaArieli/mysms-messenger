@@ -14,28 +14,49 @@ import { MessageListComponent } from './message-list/message-list.component';
   styleUrls: ['./messenger.component.scss']
 })
 export class MessengerComponent {
+  @ViewChild(ComposeBoxComponent) composeBox!: ComposeBoxComponent;
   @ViewChild(MessageListComponent) messageList!: MessageListComponent;
 
-  currentUser = this.authService.currentUser;
-  isLoading = signal(false);
+  apiError = signal<string | null>(null);
+  currentUser!: any;
 
   constructor(
     private authService: AuthService,
     private messageService: MessageService,
     private router: Router
-  ) {}
+  ) {
+    this.currentUser = this.authService.currentUser;
+  }
 
   onMessageSent(data: { to: string; body: string }): void {
-    this.isLoading.set(true);
+    this.apiError.set(null);
+
     this.messageService.sendMessage(data.to, data.body).subscribe({
       next: () => {
-        this.isLoading.set(false);
         if (this.messageList) {
           this.messageList.loadMessages();
         }
+        if (this.composeBox) {
+          this.composeBox.resetForm();
+        }
       },
       error: (err) => {
-        this.isLoading.set(false);
+        let errorMsg = 'Failed to send message';
+
+        if (err?.error?.errors) {
+          if (Array.isArray(err.error.errors)) {
+            errorMsg = err.error.errors[0];
+          } else if (typeof err.error.errors === 'object') {
+            errorMsg = err.error.errors.base || Object.values(err.error.errors)[0];
+          }
+        } else if (err?.error?.error) {
+          errorMsg = err.error.error;
+        }
+
+        this.apiError.set(errorMsg);
+        if (this.composeBox) {
+          this.composeBox.isLoading.set(false);
+        }
       }
     });
   }

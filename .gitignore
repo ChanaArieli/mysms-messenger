@@ -34,3 +34,6 @@ frontend/.DS_Store
 
 # Docker
 docker-compose.override.yml
+
+# Claude Code
+.claude/settings.local.json

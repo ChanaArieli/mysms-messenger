@@ -1,4 +1,4 @@
-import { Component, Output, EventEmitter, signal } from '@angular/core';
+import { Component, Output, EventEmitter, Input, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 
@@ -11,6 +11,11 @@ import { FormsModule } from '@angular/forms';
 })
 export class ComposeBoxComponent {
   @Output() messageSent = new EventEmitter<{ to: string; body: string }>();
+  @Input() set apiError(value: string | null) {
+    if (value) {
+      this.error.set(value);
+    }
+  }
 
   to = '';
   body = '';
@@ -27,6 +32,10 @@ export class ComposeBoxComponent {
     this.error.set('');
 
     this.messageSent.emit({ to: this.to, body: this.body });
+    // Parent component will reset isLoading after API response
+  }
+
+  resetForm(): void {
     this.to = '';
     this.body = '';
     this.isLoading.set(false);

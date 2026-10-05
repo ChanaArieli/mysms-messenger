@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "permissions": {
+    "allow": [
+      "Bash(ls *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(git status)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git branch *)",
+      "Bash(git commit *)",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(bundle *)",
+      "Bash(rails *)",
+      "Bash(bin/rails *)",
+      "Read",
+      "Edit",
+      "Write"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git reset --hard *)",
+      "Bash(git push --force *)"
+    ],
+    "ask": [],
+    "defaultMode": "default"
+  }
+}

@@ -50,7 +50,19 @@ export class LoginComponent {
         this.router.navigate(['/']);
       },
       error: (err) => {
-        this.error.set(err.error?.errors?.[0] || 'Authentication failed');
+        const errors = err.error?.errors;
+        if (errors) {
+          if (typeof errors === 'object') {
+            const errorMessages = Object.entries(errors)
+              .map(([field, message]) => `${field}: ${message}`)
+              .join(', ');
+            this.error.set(errorMessages);
+          } else {
+            this.error.set(errors);
+          }
+        } else {
+          this.error.set('Authentication failed');
+        }
         this.isLoading.set(false);
       }
     });

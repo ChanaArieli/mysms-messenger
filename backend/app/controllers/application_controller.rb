@@ -1,11 +1,32 @@
 class ApplicationController < ActionController::API
   include ActionController::MimeResponds
-  before_action :configure_permitted_parameters, if: :devise_controller?
+  include Devise::Controllers::Helpers
 
-  protected
+  def authenticate_user!
+    token = extract_token_from_request
 
-  def configure_permitted_parameters
-    devise_parameter_sanitizer.permit(:sign_up, keys: [:email, :password, :password_confirmation])
-    devise_parameter_sanitizer.permit(:account_update, keys: [:email, :password, :password_confirmation, :current_password])
+    if token.blank?
+      render json: { error: 'Missing authentication token' }, status: :unauthorized
+      return
+    end
+
+    begin
+      payload = decode_jwt(token)
+      user = User.find(payload['sub'])
+      sign_in user, store: false
+    rescue JWT::DecodeError, Mongoid::Errors::DocumentNotFound
+      render json: { error: 'Invalid or expired token' }, status: :unauthorized
+    end
+  end
+
+  private
+
+  def extract_token_from_request
+    auth_header = request.headers['Authorization']
+    auth_header&.sub(/^Bearer /, '')
+  end
+
+  def decode_jwt(token)
+    JWT.decode(token, ENV.fetch('DEVISE_JWT_SECRET_KEY'), true, algorithm: 'HS256').first
   end
 end

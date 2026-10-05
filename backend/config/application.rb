@@ -14,9 +14,6 @@ require "action_view/railtie"
 require "action_cable/engine"
 require "rails/test_unit/railtie"
 
-# Mongoid
-require "mongoid/rails"
-
 # Require the gems listed in Gemfile, including any gems
 # you've limited to :test, :development, or :production.
 Bundler.require(*Rails.groups)
@@ -24,7 +21,7 @@ Bundler.require(*Rails.groups)
 module Backend
   class Application < Rails::Application
     # Initialize configuration defaults for originally generated Rails version.
-    config.load_defaults 8.1
+    config.load_defaults 7.2
 
     # Please, add to the `ignore` list any other `lib` subdirectories that do
     # not contain `.rb` files, or that should not be reloaded or eager loaded.

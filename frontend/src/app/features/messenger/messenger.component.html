@@ -11,6 +11,7 @@
     <div class="compose-section">
       <app-compose-box
         (messageSent)="onMessageSent($event)"
+        [apiError]="apiError()"
       ></app-compose-box>
     </div>
 

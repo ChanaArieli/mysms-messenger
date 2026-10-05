@@ -32,6 +32,9 @@ gem "dotenv-rails", groups: [:development, :test]
 # Windows does not include zoneinfo files, so bundle the tzinfo-data gem
 gem "tzinfo-data", platforms: %i[ windows jruby ]
 
+# Reduces boot times through caching; required in config/boot.rb
+gem "bootsnap", require: false
+
 group :development, :test do
   # Testing
   gem "rspec-rails"

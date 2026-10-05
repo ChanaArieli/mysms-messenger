@@ -1,13 +1,12 @@
 import { Injectable, signal } from '@angular/core';
 import { HttpClient, HttpResponse } from '@angular/common/http';
-import { environment } from '../../environments/environment';
 import { TokenStorageService } from './token-storage.service';
 import { User } from '../models/user.model';
 import { tap } from 'rxjs/operators';
 
 @Injectable({ providedIn: 'root' })
 export class AuthService {
-  private readonly apiUrl = environment.apiUrl;
+  private readonly apiUrl = 'http://localhost:3000';
   currentUser = signal<User | null>(null);
   isLoggedIn = signal(false);
 
@@ -19,7 +18,7 @@ export class AuthService {
   }
 
   signup(email: string, password: string) {
-    return this.http.post<HttpResponse<{ user: User }>>(
+    return this.http.post<{ user: User }>(
       `${this.apiUrl}/signup`,
       { user: { email, password, password_confirmation: password } },
       { observe: 'response' }
@@ -36,7 +35,7 @@ export class AuthService {
   }
 
   login(email: string, password: string) {
-    return this.http.post<HttpResponse<{ user: User }>>(
+    return this.http.post<{ user: User }>(
       `${this.apiUrl}/login`,
       { user: { email, password } },
       { observe: 'response' }

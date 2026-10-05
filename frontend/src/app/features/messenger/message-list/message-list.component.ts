@@ -1,6 +1,8 @@
 import { Component, OnInit, signal, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { Router } from '@angular/router';
 import { MessageService } from '../../../core/services/message.service';
+import { AuthService } from '../../../core/auth/auth.service';
 import { MessageCardComponent } from '../message-card/message-card.component';
 import { Message } from '../../../core/models/message.model';
 
@@ -15,19 +17,15 @@ export class MessageListComponent implements OnInit {
   messages = signal<Message[]>([]);
   isLoading = signal(false);
   error = signal('');
-  private pollInterval: any;
 
-  constructor(private messageService: MessageService) {}
+  constructor(
+    private messageService: MessageService,
+    private authService: AuthService,
+    private router: Router
+  ) {}
 
   ngOnInit(): void {
     this.loadMessages();
-    this.startPolling();
-  }
-
-  ngOnDestroy(): void {
-    if (this.pollInterval) {
-      clearInterval(this.pollInterval);
-    }
   }
 
   loadMessages(): void {
@@ -38,16 +36,16 @@ export class MessageListComponent implements OnInit {
         this.isLoading.set(false);
       },
       error: (err) => {
-        this.error.set('Failed to load messages');
         this.isLoading.set(false);
+        if (err.status === 401) {
+          this.authService.currentUser.set(null);
+          this.authService.isLoggedIn.set(false);
+          this.router.navigate(['/login']);
+        } else {
+          this.error.set('Failed to load messages');
+        }
       }
     });
-  }
-
-  private startPolling(): void {
-    this.pollInterval = setInterval(() => {
-      this.loadMessages();
-    }, 5000);
   }
 
   refresh(): void {

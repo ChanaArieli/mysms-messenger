@@ -3,24 +3,33 @@ class MessagesController < ApplicationController
 
   def index
     messages = current_user.messages.order(created_at: :desc)
-    render json: messages.map { |m| message_json(m) }
+    response.headers['Content-Type'] = 'application/json'
+    response.status = 200
+    self.response_body = JSON.generate(messages.map { |m| message_json(m) })
   end
 
   def create
-    message = current_user.messages.new(message_params)
+    body = JSON.parse(request.body.string)
+    message_params = body['message'] || {}
+
+    message = current_user.messages.new(to: message_params['to'], body: message_params['body'])
     if message.save
       send_via_twilio(message)
-      render json: message_json(message), status: :created
+      response.headers['Content-Type'] = 'application/json'
+      response.status = 201
+      self.response_body = JSON.generate(message_json(message))
     else
-      render json: { errors: message.errors.full_messages }, status: :unprocessable_entity
+      response.headers['Content-Type'] = 'application/json'
+      response.status = 422
+      self.response_body = JSON.generate({ errors: message.errors.full_messages })
     end
+  rescue JSON::ParserError
+    response.headers['Content-Type'] = 'application/json'
+    response.status = 400
+    self.response_body = JSON.generate({ errors: { base: 'Invalid JSON' } })
   end
 
   private
-
-  def message_params
-    params.require(:message).permit(:to, :body)
-  end
 
   def send_via_twilio(message)
     TwilioSenderService.new(message).call
