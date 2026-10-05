@@ -1,0 +1,21 @@
+<div class="messenger-container">
+  <div class="header">
+    <h1>MySMS Messenger</h1>
+    <div class="user-info">
+      <span>{{ currentUser()?.email }}</span>
+      <button (click)="logout()" class="logout-btn">Logout</button>
+    </div>
+  </div>
+
+  <div class="content">
+    <div class="compose-section">
+      <app-compose-box
+        (messageSent)="onMessageSent($event)"
+      ></app-compose-box>
+    </div>
+
+    <div class="messages-section">
+      <app-message-list></app-message-list>
+    </div>
+  </div>
+</div>

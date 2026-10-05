@@ -1,0 +1,34 @@
+<div class="compose-box">
+  <h3>Send SMS</h3>
+
+  @if (error()) {
+    <div class="error-message">{{ error() }}</div>
+  }
+
+  <div class="form-group">
+    <label for="to">To (Twilio-verified number)</label>
+    <input
+      id="to"
+      type="tel"
+      [(ngModel)]="to"
+      placeholder="e.g., +15551234567"
+      class="phone-input"
+    />
+  </div>
+
+  <div class="form-group">
+    <label for="body">Message</label>
+    <textarea
+      id="body"
+      [(ngModel)]="body"
+      placeholder="Type your message here..."
+      rows="4"
+      maxlength="1600"
+    ></textarea>
+    <div class="char-count">{{ body.length }}/1600</div>
+  </div>
+
+  <button (click)="onSend()" [disabled]="isLoading()" class="send-btn">
+    {{ isLoading() ? 'Sending...' : 'Send SMS' }}
+  </button>
+</div>

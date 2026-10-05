@@ -1,0 +1,19 @@
+<div class="message-card">
+  <div class="message-header">
+    <div class="message-to">To: {{ message.to }}</div>
+    <div class="message-time">{{ message.created_at | date: 'short' }}</div>
+  </div>
+
+  <div class="message-body">
+    {{ message.body }}
+  </div>
+
+  <div class="message-footer">
+    <span class="status-badge" [class]="getStatusColor()">
+      {{ getStatusText() }}
+    </span>
+    @if (message.error_message) {
+      <span class="error-text">{{ message.error_message }}</span>
+    }
+  </div>
+</div>

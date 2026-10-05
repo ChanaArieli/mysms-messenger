@@ -1,0 +1,64 @@
+<div class="login-container">
+  <div class="login-card">
+    <h1>{{ isLogin ? 'Login' : 'Sign Up' }}</h1>
+
+    @if (error()) {
+      <div class="error-message">{{ error() }}</div>
+    }
+
+    <form (ngSubmit)="onSubmit()">
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input
+          id="email"
+          type="email"
+          [(ngModel)]="email"
+          name="email"
+          required
+          placeholder="Enter your email"
+        />
+      </div>
+
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input
+          id="password"
+          type="password"
+          [(ngModel)]="password"
+          name="password"
+          required
+          placeholder="Enter your password"
+        />
+      </div>
+
+      @if (!isLogin) {
+        <div class="form-group">
+          <label for="confirm-password">Confirm Password</label>
+          <input
+            id="confirm-password"
+            type="password"
+            [(ngModel)]="confirmPassword"
+            name="confirmPassword"
+            required
+            placeholder="Confirm your password"
+          />
+        </div>
+      }
+
+      <button
+        type="submit"
+        [disabled]="isLoading()"
+        class="submit-btn"
+      >
+        {{ isLoading() ? 'Loading...' : (isLogin ? 'Login' : 'Sign Up') }}
+      </button>
+    </form>
+
+    <div class="toggle-mode">
+      {{ isLogin ? 'Don\'t have an account?' : 'Already have an account?' }}
+      <button type="button" (click)="toggleMode()" class="toggle-btn">
+        {{ isLogin ? 'Sign Up' : 'Login' }}
+      </button>
+    </div>
+  </div>
+</div>
