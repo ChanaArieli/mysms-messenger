@@ -22,7 +22,7 @@ module Users
       user = User.find_by(email: email)
 
       if user.nil?
-        response.status = 404
+        response.status = 401
         self.response_body = JSON.generate({ errors: { base: 'No account found with this email. Please sign up.' } })
       elsif user.valid_password?(password)
         token = generate_jwt(user)
