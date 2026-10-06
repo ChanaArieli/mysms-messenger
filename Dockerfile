@@ -1,16 +1,5 @@
 # Multi-stage build for production
-# Stage 1: Build Angular frontend
-FROM node:20-alpine as frontend-builder
-
-WORKDIR /app/frontend
-
-COPY frontend/package*.json ./
-RUN npm install
-
-COPY frontend/ .
-RUN npm run build -- --configuration production
-
-# Stage 2: Build Rails backend
+# Stage 1: Build Rails backend
 FROM ruby:3.3.12-slim as backend-builder
 
 WORKDIR /app
@@ -40,9 +29,6 @@ RUN apt-get update && apt-get install -y \
 
 # Copy gems from builder
 COPY --from=backend-builder /usr/local/bundle /usr/local/bundle
-
-# Copy built Angular app
-COPY --from=frontend-builder /app/frontend/dist/frontend public
 
 # Copy Rails app
 COPY backend/ .
