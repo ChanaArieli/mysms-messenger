@@ -53,6 +53,9 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV WEB_CONCURRENCY=0
 ENV RAILS_LOG_TO_STDOUT=true
+# Set default MONGODB_URI to prevent connection timeouts during startup
+# (will be overridden by Render environment variable)
+ENV MONGODB_URI=mongodb://localhost:27017/mysms_prod
 
 # Expose port
 EXPOSE 3000
