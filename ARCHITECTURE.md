@@ -2308,27 +2308,6 @@ private async initializeAuth(): Promise<void> {
 
 ---
 
-## Key Decision Points for Interviews
-
-**When interviewer asks "How do you validate sessions?"**
-
-Answer structure:
-1. **Identify the problem:** "Stored tokens can become stale or revoked"
-2. **Show trade-offs:** JWT-only vs. /me validation vs. refresh tokens
-3. **Pick one:** "I'd implement refresh tokens for production"
-4. **Explain why:** "Short-lived access tokens + long-lived refresh tokens = security + UX"
-5. **Show migration path:** "Start with /me validation for immediate security, migrate to refresh pattern"
-
-**Red flags to avoid:**
-- ❌ "JWT tokens never expire" (insecure)
-- ❌ "Sessions are validated in localStorage only" (XSS risk)
-- ❌ "I store tokens in localStorage forever" (no token refresh)
-- ✅ "I store tokens in httpOnly cookies" (XSS-safe)
-- ✅ "I validate with backend on init" (this app does this)
-- ✅ "I use refresh tokens to extend sessions" (best practice)
-
----
-
 ## Implementation Decision for This App
 
 **Chosen Approach: Validate with /me endpoint (Approach 2)**
