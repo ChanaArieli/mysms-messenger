@@ -51,9 +51,10 @@ COPY backend/ .
 ENV RAILS_ENV=production
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV WEB_CONCURRENCY=0
 
 # Expose port
 EXPOSE 3000
 
-# Start Rails server with simplified puma config
-CMD ["bundle", "exec", "puma", "-b", "tcp://0.0.0.0:3000", "-w", "1", "-t", "5:5"]
+# Start Rails server (config from puma.rb)
+CMD ["bundle", "exec", "puma", "-b", "tcp://0.0.0.0:3000"]
