@@ -28,9 +28,10 @@ module Users
       response.status = 400
       self.response_body = JSON.generate({ errors: { base: 'Invalid JSON' } })
     rescue StandardError => e
+      Rails.logger.error("Signup error: #{e.class} - #{e.message}")
       response.headers['Content-Type'] = 'application/json'
       response.status = 422
-      self.response_body = JSON.generate({ errors: { base: "Signup failed: #{e.message}" } })
+      self.response_body = JSON.generate({ errors: { base: 'Signup failed. Please try again.' } })
     end
 
     private

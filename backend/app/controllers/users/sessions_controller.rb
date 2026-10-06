@@ -31,9 +31,10 @@ module Users
       response.status = 400
       self.response_body = JSON.generate({ errors: { base: 'Invalid JSON' } })
     rescue StandardError => e
+      Rails.logger.error("Login error: #{e.class} - #{e.message}")
       response.headers['Content-Type'] = 'application/json'
       response.status = 401
-      self.response_body = JSON.generate({ errors: { base: "Login failed: #{e.message}" } })
+      self.response_body = JSON.generate({ errors: { base: 'Login failed. Please try again.' } })
     end
 
     def destroy
