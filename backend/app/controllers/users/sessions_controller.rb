@@ -11,20 +11,27 @@ module Users
       email = user_params['email'].to_s.strip
       password = user_params['password'].to_s
 
-      if email.present? && password.present?
-        user = User.find_by(email: email)
+      response.headers['Content-Type'] = 'application/json'
+
+      if email.blank? || password.blank?
+        response.status = 422
+        self.response_body = JSON.generate({ errors: { base: 'Please provide email and password' } })
+        return
       end
 
-      if user&.valid_password?(password)
+      user = User.find_by(email: email)
+
+      if user.nil?
+        response.status = 404
+        self.response_body = JSON.generate({ errors: { base: 'No account found with this email. Please sign up.' } })
+      elsif user.valid_password?(password)
         token = generate_jwt(user)
-        response.headers['Content-Type'] = 'application/json'
         response.headers['Authorization'] = "Bearer #{token}"
         response.status = 200
         self.response_body = JSON.generate({ user: { id: user.id.to_s, email: user.email } })
       else
-        response.headers['Content-Type'] = 'application/json'
         response.status = 401
-        self.response_body = JSON.generate({ errors: { base: 'Invalid email or password' } })
+        self.response_body = JSON.generate({ errors: { base: 'Incorrect password' } })
       end
     rescue JSON::ParserError
       response.headers['Content-Type'] = 'application/json'
