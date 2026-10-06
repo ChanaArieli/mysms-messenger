@@ -214,7 +214,9 @@ MONGODB_URI=mongodb://mongodb:27017/mysms_dev
 
 ## Deployment
 
-See [DEPLOY.md](DEPLOY.md) for Render.com deployment instructions.
+The app is deployed and live at: **[https://mysms-messenger.onrender.com](https://mysms-messenger.onrender.com)**
+
+To deploy your own instance, ensure you have Twilio credentials and follow the standard deployment process for Rails + Angular apps on Render.com or similar platforms.
 
 ## Known Limitations
 

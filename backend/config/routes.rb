@@ -12,4 +12,8 @@ Rails.application.routes.draw do
   resources :messages, only: [:index, :create]
   get 'me', to: 'users#me'
   post 'webhooks/twilio/status', to: 'webhooks/twilio#status'
+
+  # Serve Angular app - catch-all for SPA routing
+  get '*path', to: 'static#index', constraints: ->(req) { !req.path.match?(%r{^/api/|^/webhooks/}) }
+  root 'static#index'
 end
