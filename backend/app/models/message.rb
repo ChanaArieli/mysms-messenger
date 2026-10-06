@@ -10,7 +10,7 @@ class Message
   field :status,             type: String, default: 'queued'
   field :error_message,      type: String
 
-  validates :to, presence: true
+  validates :to, presence: true, format: { with: /\A\+?[1-9]\d{1,14}\z/, message: 'must be a valid phone number (E.164 format)' }
   validates :body, presence: true, length: { maximum: 1600 }
   validates :user_id, presence: true
 

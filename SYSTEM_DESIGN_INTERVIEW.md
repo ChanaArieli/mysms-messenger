@@ -1,0 +1,1667 @@
+# System Design Interview Q&A
+## MySMS Messenger App
+
+**Conducted**: 2026-10-06  
+**Focus Areas**: Scale, Architecture, Trade-offs, Senior Software Engineering
+
+---
+
+## Question 1: Database Scaling
+
+**Q: Your current architecture uses MongoDB with Mongoid. As you scale to millions of users sending thousands of messages per second, how would you handle the message volume? Would you reconsider the MongoDB + Mongoid choice?**
+
+### Answer:
+
+**Current State:**
+MongoDB + Mongoid is a good fit for the current stage because:
+- Document model matches message structure naturally (flexible schema for status, error_message, metadata)
+- Easy to scale horizontally via sharding
+- Development velocity is high
+
+**At Scale (millions of users, thousands of msg/sec):**
+
+I'd **keep MongoDB but evolve the architecture**:
+
+1. **Horizontal Sharding Strategy**
+   - Shard key: `user_id` (not global message volume, but per-user history)
+   - Rationale: Most queries are user-centric (GET /messages returns MY messages)
+   - Distributes write load evenly across shards
+   - Avoids hot shards (unlike sharding by `created_at`)
+
+2. **Time-Series Collection** (MongoDB 5.0+)
+   - Convert messages to time-series collection for automatic bucketing
+   - Reduces storage by 50-80% for historical messages
+   - Perfect for write-heavy, read-heavy access patterns
+   - TTL indexes automatically clean up old messages
+
+3. **Archive Strategy**
+   - Messages older than 90 days → cheaper MongoDB tier or S3 + Athena
+   - Rationale: Users rarely query old messages; compliance allows it
+   - Saves ~40% of storage costs
+
+4. **Alternative Considered & Rejected:**
+   - **PostgreSQL + JSONB**: Could work, but sharding is harder (Citus adds complexity). PostgreSQL isn't designed for horizontal scale like MongoDB.
+   - **Cassandra**: Overkill for this use case; better for distributed analytics/metrics
+   - **DynamoDB**: Lock-in to AWS; less flexible query language; higher per-request costs at scale
+
+**Why MongoDB Over SQL at Scale:**
+- Native sharding (not bolted on like Citus)
+- No JOIN overhead (messages are self-contained documents)
+- Easy to add fields without migrations (error_metadata, delivery_millis, etc.)
+- Cost-effective for high-volume writes
+
+---
+
+## Question 2: Indexing & Query Optimization
+
+**Q: What indexing strategy would you implement to keep query performance fast as the messages collection grows to billions of records? Would you partition/shard data?**
+
+### Answer:
+
+**Indexing Strategy:**
+
+```javascript
+// Existing compound index (good):
+db.messages.createIndex({ user_id: 1, created_at: -1 })
+
+// Additional indexes needed at scale:
+
+// 1. Webhook lookups (status updates from Twilio)
+db.messages.createIndex({ twilio_sid: 1 }, { unique: true })
+// Rationale: Every webhook hits this. Single field, unique constraint.
+
+// 2. Querying failed messages (retry jobs)
+db.messages.createIndex({ status: 1, created_at: 1 })
+// Rationale: Background job scans "failed" messages older than 1 hour for retries
+
+// 3. Monitoring/analytics (optional, separate collection?)
+db.messages.createIndex({ created_at: 1, status: 1 })
+// Rationale: "How many delivered in the last hour?" queries
+
+// 4. Phone number searches (compliance/blocking)
+db.messages.createIndex({ to: 1, user_id: 1 })
+// Rationale: If abuse reports come in, quickly find all messages to a number
+```
+
+**Index Pruning:**
+- Remove any unused indexes (check MongoDB Profiler)
+- Each index adds ~20% write overhead (maintain during INSERT/UPDATE)
+
+**Sharding:**
+
+| Shard Key | Pros | Cons | Verdict |
+|-----------|------|------|---------|
+| `user_id` | Even distribution; all user queries hit 1 shard | Can't easily query across users (OK, compliance prefer it) | ✅ **USE THIS** |
+| `created_at` (time-based) | Chronological queries fast | Hot shard on current time; old shards cold | ❌ Avoid |
+| `to` (phone number) | Compliance queries fast | Highly skewed if one number popular | ❌ Avoid |
+| Compound `(user_id, created_at)` | Both queries optimized | Increases shard key space | Possible, but overkill |
+
+**Recommended**: Shard on `user_id`. Keeps data isolated, simplifies compliance, speeds up 95% of queries.
+
+---
+
+## Question 3: Message Queue & Async Processing
+
+**Q: Currently, TwilioSenderService sends synchronously in the request/response cycle. What happens if Twilio is slow or down? At what point would you introduce a message queue?**
+
+### Answer:
+
+**Current Problem:**
+```
+POST /messages
+  ↓
+Create Message record (status: queued)
+  ↓
+Call Twilio API (BLOCKING) ← Twilio is slow → User waits 2-5 seconds
+  ↓
+Update status + return
+```
+
+Issues:
+- If Twilio times out (>30s), request fails, but message was created (orphaned)
+- User sees failed response even though Twilio accepted it
+- API becomes slow under Twilio latency spikes
+- No retry mechanism for transient failures
+
+**Evolution by Scale:**
+
+**Stage 1: Current (< 100 msg/sec)**
+- Keep synchronous for simplicity
+- Add timeout: `Twilio.send_message(timeout: 5.seconds)`
+- If timeout: set status to "queued", rely on webhook to update later
+- Trade-off: Simple; acceptable UX if webhooks work
+
+**Stage 2: Introduce Job Queue (> 100 msg/sec)**
+- Use **Sidekiq** (Redis-backed background jobs)
+- Flow:
+  ```
+  POST /messages
+    ↓
+  Create Message (status: queued) + enqueue SidekiqJob
+    ↓
+  Return immediately to user ← Now instant
+    ↓
+  [Async] SidekiqJob sends via Twilio
+    ↓
+  Update message status (sent/failed)
+  ```
+
+- Benefits:
+  - API returns immediately (no Twilio latency)
+  - Automatic retries (Sidekiq configurable: 25x retry with exponential backoff)
+  - Failed messages visible in Sidekiq UI
+  - Decouples Twilio availability from API availability
+
+- Configuration:
+  ```ruby
+  class SendMessageJob
+    include Sidekiq::Job
+    sidekiq_options retry: 25, dead: true
+    
+    def perform(message_id)
+      message = Message.find(message_id)
+      TwilioSenderService.send(message)
+    rescue TwilioError => e
+      message.update(error_message: e.message)
+      raise e  # Sidekiq retries
+    end
+  end
+  ```
+
+**Stage 3: Distributed Message Queue (> 10k msg/sec)**
+- Scale beyond single Redis instance
+- Use **Kafka** or **RabbitMQ**:
+  - Multiple producers (frontend servers) → single durable queue
+  - Multiple consumers (workers) pulling jobs in parallel
+  - Kafka advantages: immutable log, easy to replay if bugs
+  - RabbitMQ advantages: simpler setup, built-in acks
+
+- Kafka flow:
+  ```
+  Producers (3x API servers)
+       ↓
+    [Kafka Topic: messages-to-send]
+       ↓
+    Consumers (10x Worker pods)
+       ↓
+    Twilio API
+  ```
+
+**Delivery Guarantees:**
+
+| Guarantee | Mechanism | Cost | Use Case |
+|-----------|-----------|------|----------|
+| **At-most-once** | Fire and forget | Fastest | Analytics, non-critical |
+| **At-least-once** | Job stays in queue until ack | Requires dedup | Messaging (we need this) |
+| **Exactly-once** | At-least-once + dedup | Slowest, complex | Financial, critical |
+
+**For SMS:**
+- Use **At-least-once** + **idempotency key**
+- When Twilio confirms send, check if `twilio_sid` already set
+- If yes: Twilio retransmitted (network glitch), skip
+- If no: This is first send, update status
+- Prevents duplicate messages
+
+---
+
+## Question 4: Real-Time Status Updates & Webhooks
+
+**Q: How would you handle the real-time status updates from Twilio webhooks at scale without overwhelming the database?**
+
+### Answer:
+
+**Current Approach:**
+- Twilio → `POST /webhooks/twilio/status`
+- Direct database update in request handler
+- At scale: 1000s of webhooks/sec → database saturation
+
+**Issues:**
+- Each webhook = 1 database write
+- No deduplication (Twilio retries webhooks if no 200 response)
+- No ordering guarantee (webhooks may arrive out-of-order)
+- If database is slow, webhooks back up and timeout
+
+**Evolution:**
+
+**Stage 1: Webhook Buffer (current scale)**
+- Add idempotency: check if message already has status
+- Return 200 immediately after parsing
+- Then update database asynchronously:
+  ```ruby
+  POST /webhooks/twilio/status
+    ↓
+  Parse webhook payload
+  Return 200 to Twilio (acknowledge receipt)
+    ↓
+  [Async] Enqueue UpdateStatusJob
+    ↓
+  Job: Find message by twilio_sid, update status
+  ```
+- Benefit: Twilio doesn't retry; decouples webhook receipt from DB write
+
+**Stage 2: Webhook Queue (1000+ webhook/sec)**
+- Pre-allocate: Why hit the database twice?
+- Use **in-memory cache** (Redis) as webhook buffer:
+  ```ruby
+  POST /webhooks/twilio/status
+    ↓
+  Redis.lpush("webhook_queue", webhook_payload)
+  Return 200
+    ↓
+  [Async] Consumer job: read from Redis in batches
+    ↓
+  Batch update messages (bulk write to MongoDB)
+  ```
+- Benefits:
+  - Webhooks always fast (Redis writes are nanoseconds)
+  - Batch writes reduce database load (1 write per 100 webhooks vs. 100 writes)
+  - Handles Twilio retries naturally (same message_id overwrites old entry)
+
+**Stage 3: Event Streaming (10k+ webhook/sec)**
+- Kafka topic: `sms-status-updates`
+- Webhooks → Kafka (fast, durable)
+- Multiple consumers can subscribe:
+  - Consumer 1: Update MongoDB
+  - Consumer 2: Update real-time cache (Redis) for WebSocket push
+  - Consumer 3: Send to analytics/metrics system
+- Benefits:
+  - Decoupled; webhook system independent of database
+  - Replay capability (replay last 7 days if bug found)
+  - Natural fan-out (many systems can listen)
+
+**Deduplication Strategy:**
+```javascript
+// Webhook arrives: { message_id: "123", status: "delivered", timestamp: 1696000000 }
+
+// Check Redis cache:
+const cached = Redis.get("webhook:delivered:123")
+if (cached && cached.timestamp >= webhook.timestamp) {
+  // Already processed this or a newer status
+  return 200
+}
+
+// New or newer status: process it
+Redis.set("webhook:delivered:123", webhook, EX: 86400) // 24h TTL
+Database.update(message: 123, status: "delivered")
+```
+
+---
+
+## Question 5: Monitoring & Failure Recovery
+
+**Q: How would you track failed messages? What SLAs would you promise? How would you implement retries without creating duplicates?**
+
+### Answer:
+
+**Current State:**
+- Failed messages stored in `error_message` field
+- No automatic retry mechanism
+- User must manually resend
+
+**Problems:**
+- Silent failures (what if a message fails after sending to Twilio but webhook never arrives?)
+- No visibility into failure causes (rate limits, invalid number, Twilio outage?)
+- Compliance issue: no audit trail
+
+**SLA Design:**
+
+```
+Tier: Standard SMS
+- 99.5% of messages delivered within 60 seconds
+- Failed messages: automatic retry for 24 hours
+- Dead-letter handling: user notified if undeliverable after 24h
+- Monitoring: alerting if delivery rate < 98%
+```
+
+**Failure Tracking System:**
+
+```javascript
+Message Schema:
+{
+  _id: ObjectId,
+  user_id: ObjectId,
+  to: "+1234567890",
+  body: "Hello",
+  
+  // Status tracking
+  status: "delivered",  // queued | sent | delivered | failed
+  
+  // Attempt tracking (NEW)
+  attempts: [
+    {
+      attempt_number: 1,
+      twilio_sid: "SM12345abc",
+      sent_at: ISODate("2026-10-06T10:00:00Z"),
+      status: "sent"
+    },
+    {
+      attempt_number: 2,
+      twilio_sid: "SM12345def",
+      sent_at: ISODate("2026-10-06T10:05:00Z"),
+      status: "delivered",
+      delivered_at: ISODate("2026-10-06T10:05:10Z")
+    }
+  ],
+  
+  // Latest attempt summary
+  current_twilio_sid: "SM12345def",
+  delivered_at: ISODate("2026-10-06T10:05:10Z"),
+  
+  // Failure details
+  failure_reason: null,
+  error_message: null,
+  
+  // Compliance
+  created_at: ISODate("2026-10-06T10:00:00Z"),
+  updated_at: ISODate("2026-10-06T10:05:10Z")
+}
+```
+
+**Retry Logic:**
+
+```ruby
+class RetryFailedMessagesJob
+  def perform
+    # Find messages that:
+    # 1. Failed
+    # 2. Last attempt < 1 hour ago
+    # 3. Fewer than 5 attempts
+    # 4. Created within last 24 hours
+    
+    failed = Message.where(
+      status: 'failed',
+      created_at: { '$gte' => 24.hours.ago },
+      'attempts.0' => { '$exists' => true }
+    ).where('attempts' => { '$size' => { '$lt' => 5 } })
+     .where('attempts.-1.sent_at' => { '$lt' => 1.hour.ago })
+    
+    failed.each do |message|
+      # Idempotency: use message._id as dedup key
+      # Twilio accepts duplicate SID if same request ID
+      
+      attempt = {
+        attempt_number: message.attempts.length + 1,
+        sent_at: Time.now,
+        status: 'pending'
+      }
+      
+      begin
+        result = TwilioSenderService.send(
+          message,
+          idempotency_key: "#{message._id}-attempt-#{attempt[:attempt_number]}"
+        )
+        attempt.update(twilio_sid: result.sid, status: 'sent')
+      rescue => e
+        attempt.update(status: 'error', error: e.message)
+      end
+      
+      message.update(
+        attempts: message.attempts + [attempt],
+        current_twilio_sid: attempt[:twilio_sid]
+      )
+    end
+  end
+end
+
+# Run every 15 minutes
+class RetryFailedMessagesJob
+  include Sidekiq::Job
+  sidekiq_options retry: 3
+  
+  def perform
+    # ... retry logic
+  end
+end
+
+# Cron:
+sidekiq_cron_configuration = {
+  'retry-failed-messages' => {
+    'class' => 'RetryFailedMessagesJob',
+    'cron' => '*/15 * * * *'
+  }
+}
+```
+
+**Webhook Deduplication:**
+
+```ruby
+POST /webhooks/twilio/status
+  message_id = find_message_by_twilio_sid(webhook.message_sid)
+  
+  # Idempotency check
+  recent_status = message.attempts.last
+  if recent_status.twilio_sid == webhook.message_sid &&
+     recent_status.status == webhook.status &&
+     (Time.now - recent_status.updated_at) < 5.minutes
+    # Duplicate webhook (Twilio retry); ignore
+    return 200
+  end
+  
+  # Real status update
+  message.attempts.last.update(status: webhook.status)
+  message.update(status: webhook.status)
+  return 200
+```
+
+**Monitoring & Alerting:**
+
+```ruby
+# Cloudwatch/Datadog metrics
+- delivery_rate: (delivered + failed) / sent
+  - Alert if < 95% for 10 minutes
+- failure_rate: failed / attempted
+  - Alert if > 2%
+- retry_attempts: distribution histogram
+  - Alert if p99 > 4 attempts (indicates systemic issue)
+- webhook_latency: time from send to webhook receipt
+  - Alert if p99 > 60 seconds
+- dead_letters: messages failed after 24h
+  - Daily report to ops
+
+# Dashboard:
+- Real-time delivery rate by hour
+- Top failure reasons (invalid number, rate limit, etc.)
+- Twilio service status integration
+- Failed message queue depth
+```
+
+**Dead-Letter Handling:**
+
+```ruby
+class DeadLetterMessagesJob
+  def perform
+    # Find messages with status=failed, created > 24h ago, no webhook received
+    dead_letters = Message.where(
+      status: 'failed',
+      created_at: { '$lt' => 24.hours.ago },
+      delivered_at: { '$exists' => false }
+    )
+    
+    dead_letters.each do |msg|
+      # Option 1: Mark as dead-letter, notify user
+      msg.update(status: 'dead_letter', notified_at: Time.now)
+      
+      # Option 2: Send notification to user
+      DeliveryFailureMailer.deliver_later(msg.user, msg)
+      
+      # Option 3: Log for manual investigation
+      DeadLetterLog.create(message_id: msg._id, reason: msg.error_message)
+    end
+  end
+end
+```
+
+---
+
+## Question 6: Security & Authentication at Scale
+
+**Q: You're using JWT tokens stored in localStorage. What are the security implications? How would you handle token refresh and revocation at scale?**
+
+### Answer:
+
+**Current Approach & Risks:**
+
+```javascript
+// Current: JWT in localStorage
+localStorage.setItem('auth_token', jwt)
+
+// Every request:
+const token = localStorage.getItem('auth_token')
+Authorization: Bearer <token>
+```
+
+**Security Risks:**
+
+| Risk | Severity | Mitigation |
+|------|----------|-----------|
+| **XSS Attack** (malicious script reads localStorage) | **CRITICAL** | See below |
+| **Token Theft** (attacker reads localStorage) | High | Short expiry + refresh tokens |
+| **CSRF** (cross-site request forgery) | Medium | No risk with JWT (stateless) |
+| **Token Revocation** (can't revoke at scale) | High | Token blacklist in Redis |
+| **Token Size** (grows with claims) | Low | Keep claims minimal |
+
+**XSS Prevention:**
+
+```javascript
+// ❌ DON'T do this (current approach):
+localStorage.setItem('auth_token', jwt)
+// XSS attack: <script>fetch('/steal?token=' + localStorage.token)</script>
+
+// ✅ DO THIS:
+// Store token in httpOnly, Secure cookie (backend sets it)
+// Frontend cannot access it (immune to XSS)
+
+POST /login
+Backend validates credentials
+Backend sets: Set-Cookie: auth_token=<jwt>; HttpOnly; Secure; SameSite=Strict
+Response: 200 OK (no token in JSON body)
+
+// Frontend makes requests:
+GET /messages
+Browser automatically attaches cookie
+Backend validates JWT from cookie
+```
+
+**Token Lifecycle:**
+
+```ruby
+# Tokens: short-lived access + long-lived refresh
+
+# 1. Login
+POST /login { email, password }
+  ↓
+Backend validates
+Issues 2 tokens:
+  - access_token: 15-minute JWT (claims: user_id, exp=now+15m)
+  - refresh_token: 7-day JWT (claims: user_id, version=1, exp=now+7d)
+
+Set-Cookie: access_token=<jwt>; HttpOnly; Secure; SameSite=Strict
+Set-Cookie: refresh_token=<jwt>; HttpOnly; Secure; SameSite=Strict; Path=/refresh
+
+Response: 200 OK { user: { id, email } }
+
+# 2. Access token expires (15m later)
+GET /messages
+Browser sends access_token cookie
+Backend: token expired
+Returns 401 Unauthorized
+
+# 3. Frontend detects 401, calls refresh
+POST /refresh
+Browser sends refresh_token cookie
+Backend validates refresh_token:
+  - Signature valid?
+  - Exp not reached?
+  - Version matches stored version? (for revocation)
+  
+Issues new access_token (same 15-min expiry)
+Set-Cookie: access_token=<new_jwt>; ...
+Response: 200 OK
+
+# 4. User logs out
+DELETE /logout
+Backend increments refresh_token version in database
+Old refresh_token becomes invalid (version mismatch)
+Clear cookies
+Response: 200 OK
+```
+
+**Token Revocation at Scale:**
+
+```ruby
+# User model
+User.schema do
+  field :refresh_token_version, type: Integer, default: 0
+  field :revoked_at, type: DateTime
+end
+
+# During logout
+def logout
+  current_user.update(refresh_token_version: current_user.refresh_token_version + 1)
+  # All existing refresh tokens now invalid (version mismatch)
+  # User must re-login
+  response.delete_cookie(:refresh_token)
+  response.delete_cookie(:access_token)
+end
+
+# During token refresh
+def refresh
+  token = decode_jwt(request.cookies[:refresh_token])
+  user = User.find(token.user_id)
+  
+  if user.refresh_token_version != token.version
+    # User revoked tokens (logged out from another device)
+    return 401 Unauthorized
+  end
+  
+  # Issue new access token
+  new_token = JWT.encode({
+    user_id: user.id,
+    exp: Time.now + 15.minutes,
+    iat: Time.now
+  }, Rails.application.secrets.jwt_secret)
+  
+  set_auth_cookie(:access_token, new_token)
+  render json: { user: user }
+end
+```
+
+**Token Blacklist (Optional, for Additional Security):**
+
+```ruby
+# If you need to revoke access tokens immediately (not just at expiry)
+# Example: user reports account compromise
+
+Redis cache:
+blacklist:token:{jti} = true, EX: 900s (expires with token)
+
+# Issue tokens with unique JTI (JWT ID)
+token = JWT.encode({
+  user_id: user.id,
+  jti: SecureRandom.uuid,
+  exp: Time.now + 15.minutes
+}, secret)
+
+# Validate token
+def validate_jwt(token)
+  payload = JWT.decode(token, secret)
+  
+  # Check blacklist
+  if Redis.exists("blacklist:#{payload['jti']}")
+    raise InvalidToken
+  end
+  
+  payload
+end
+
+# Revoke immediately (emergency)
+def emergency_revoke(user_id)
+  user.active_sessions.each do |session|
+    Redis.set("blacklist:#{session.jti}", true, EX: 900)
+  end
+  user.update(refresh_token_version: user.refresh_token_version + 1)
+end
+```
+
+**At Scale (millions of users):**
+
+| Scenario | Solution |
+|----------|----------|
+| Refresh token validation latency | Cache `(user_id, version)` in Redis; expires with token |
+| Blacklist memory (billions of revoked tokens) | Don't use global blacklist; use per-token expiry instead |
+| Logout not immediate | Accept 15-min delay (token lifetime) OR use token version + Redis cache |
+| Single sign-out (logout all devices) | Increment refresh_token_version; all active tokens become invalid |
+
+**Recommended: Token Version + Expiry (no blacklist needed)**
+- Simpler at scale
+- Acceptable 15-min delay
+- Logout next refresh (< 15 min)
+- Emergency: revoke via version bump
+
+---
+
+## Question 7: Rate Limiting & Abuse Prevention
+
+**Q: How would you prevent abuse (spam messages)? Where would rate limiting live? How would you handle DDoS on webhooks?**
+
+### Answer:
+
+**Rate Limiting Strategy:**
+
+**Layer 1: IP-Based (Global)**
+```ruby
+# Framework: rack-attack (middleware)
+# Prevents: DDoS, brute-force
+
+Rack::Attack.throttle('requests by IP', limit: 300, period: 1.minute) do |req|
+  req.ip
+end
+
+# Response: 429 Too Many Requests
+# Rejected at Nginx/load balancer level (before hitting Rails)
+```
+
+**Layer 2: User-Based (Per Authenticated User)**
+```ruby
+# Prevents: One user spamming others
+
+Rack::Attack.throttle('messages by user', limit: 100, period: 1.hour) do |req|
+  req.user_id if req.authenticated? && req.post?('/messages')
+end
+
+# Example: user can send max 100 messages/hour
+# Violate: return 429, message not created
+
+# Alternative: queued but rate-limited
+if user_message_count_today >= LIMIT:
+  message.update(status: 'queued_rate_limited')
+  return 200 (message accepted, but delayed)
+```
+
+**Layer 3: Recipient-Based (Prevent Spam to Same Number)**
+```ruby
+# Prevents: Spam to single victim
+
+rate_limit = {
+  limit: 10,
+  period: 1.hour,
+  key: "messages:to:#{phone_number}:#{user_id}"
+}
+
+def create_message
+  to = params[:message][:to]
+  user = current_user
+  
+  count = Redis.incr("messages:to:#{to}:#{user.id}")
+  if count == 1
+    Redis.expire("messages:to:#{to}:#{user.id}", 3600)
+  end
+  
+  if count > 10
+    return 429, { error: "Too many messages to #{to} in last hour" }
+  end
+  
+  # Create message...
+end
+```
+
+**Layer 4: Twilio-Level (Rate Limiting by Destination)**
+```ruby
+# Prevents: Hitting Twilio API limits
+
+# Strategy: Queue messages, consume from queue at controlled rate
+# Use Sidekiq with limited concurrency:
+
+Sidekiq::Client.push({
+  'class' => 'SendMessageJob',
+  'args' => [message_id],
+  'queue' => 'sms_send'
+})
+
+# Sidekiq configuration:
+sidekiq.yml:
+---
+:max_dead_letter_queue: 100
+:queues:
+  - [default, 20]       # 20 concurrent workers
+  - [sms_send, 5]       # Only 5 concurrent Twilio sends
+  - [webhooks, 10]
+
+# Result: Max 5 concurrent Twilio API calls
+# More messages queue and wait (user perceives as "delayed" but not failed)
+```
+
+**Layer 5: Plan-Based (Tiered Limits)**
+```ruby
+User schema:
+  plan: 'free' | 'pro' | 'enterprise'
+
+Message limits:
+  free: 100 messages/month
+  pro: 10,000 messages/month
+  enterprise: unlimited
+
+class Message < ApplicationRecord
+  validate :user_plan_limit
+  
+  def user_plan_limit
+    case user.plan
+    when 'free'
+      limit = 100
+      period = 1.month
+    when 'pro'
+      limit = 10000
+      period = 1.month
+    when 'enterprise'
+      return  # No limit
+    end
+    
+    count = user.messages.created_after(period.ago).count
+    if count >= limit
+      errors.add(:base, "Monthly message limit reached")
+    end
+  end
+end
+```
+
+**DDoS Protection (Webhook Endpoint):**
+
+```ruby
+# Problem: Attacker floods /webhooks/twilio/status with fake requests
+# POST /webhooks/twilio/status { message_sid: "fake", status: "delivered" }
+
+# Solution: Webhook signature validation (Twilio provides this!)
+
+POST /webhooks/twilio/status
+  twilio_signature = request.headers['X-Twilio-Signature']
+  auth_token = ENV['TWILIO_AUTH_TOKEN']
+  
+  # Twilio signs every webhook with HMAC-SHA1
+  # Attacker cannot forge signature without auth token
+  
+  computed_sig = Digest::SHA1.hexdigest(
+    "https://myapp.com/webhooks/twilio/status" + # full URL
+    request.body.read +                          # request body
+    auth_token
+  )
+  
+  unless computed_sig == twilio_signature
+    return 403 Forbidden  # Reject unsigned webhooks
+  end
+  
+  # Safe to process webhook
+end
+
+# Additional: Rate limit webhook endpoint separately
+Rack::Attack.throttle('twilio webhooks', limit: 10000, period: 1.minute) do |req|
+  'twilio_webhook' if req.post?('/webhooks/twilio/status')
+end
+```
+
+**Monitoring Rate Limiting:**
+
+```ruby
+# Metrics to track
+- rate_limit_violations_per_minute (by layer)
+- user_monthly_quota_exhaustion (by plan)
+- false_positives (legitimate traffic rejected)
+- DDoS attempts blocked
+
+# Alert if:
+- Single IP more than 1000 requests/min (likely DDoS)
+- Same phone receiving >20 messages/hour from different users (spam victim)
+- 10% of traffic hitting rate limits (misconfigured limits)
+```
+
+**Summary:**
+- **Layer 1 (IP)**: Nginx/Cloudflare, prevents DDoS
+- **Layer 2 (User)**: Per-user limits, prevents bulk spam
+- **Layer 3 (Recipient)**: Prevents targeting one user
+- **Layer 4 (Provider)**: Sidekiq queue throttling
+- **Layer 5 (Plans)**: Business logic for tiers
+- **Webhook**: HMAC signature validation + IP-based rate limit
+
+---
+
+## Question 8: Pagination for Message History
+
+**Q: With thousands of messages per user, how would you handle pagination on GET /messages? What's the best approach for both frontend and backend?**
+
+### Answer:
+
+**Current Problem:**
+```
+GET /messages
+Backend: Message.where(user_id: current_user.id).order(created_at: :desc)
+         → Loads ALL messages into memory
+         → Returns entire array to frontend
+         → Slow on first load (1000+ messages)
+         → Memory intensive (MongoDB + Rails)
+```
+
+Issues:
+- Loading 10,000 messages into memory is wasteful
+- Network payload huge (transfer all messages to frontend)
+- Frontend struggles to render 10k DOM elements
+- User waits 5+ seconds for initial load
+- Database query slow (full scan without limits)
+
+**Solution: Cursor-Based Pagination**
+
+Why cursor-based over offset-based?
+
+| Strategy | How It Works | Pros | Cons | Use Case |
+|----------|-------------|------|------|----------|
+| **Offset** | `LIMIT 20 OFFSET 40` | Simple, stateless | Slow with large offsets (skip 10k rows) | Small datasets |
+| **Cursor** | `WHERE created_at < 1696000000 LIMIT 20` | Fast (index scan), no skip | Slightly complex | Large datasets, messaging |
+
+**Recommended: Cursor-Based**
+
+**Backend Implementation:**
+
+```ruby
+# Message model
+class Message
+  field :to, type: String
+  field :body, type: String
+  field :status, type: String
+  field :created_at, type: DateTime
+  field :twilio_sid, type: String
+  field :user_id, type: ObjectId
+  
+  # Index for pagination query
+  index({ user_id: 1, created_at: -1 })
+end
+
+# Messages controller
+class MessagesController < ApplicationController
+  before_action :authenticate_user!
+  
+  def index
+    # Parameters:
+    # page_size: 20 (how many messages per page)
+    # cursor: "2026-10-06T10:00:00Z" (timestamp of last message)
+    # direction: "next" or "prev"
+    
+    page_size = [params[:page_size].to_i, 1].max
+    page_size = [page_size, 100].min  # Cap at 100
+    cursor = params[:cursor]&.to_datetime
+    direction = params[:direction] || 'next'
+    
+    query = Message.where(user_id: current_user.id)
+    
+    # Query logic: load page_size + 1 to detect if more pages exist
+    if cursor
+      if direction == 'next'
+        # Load messages BEFORE cursor
+        query = query.where(created_at: { '$lt' => cursor })
+      else
+        # Load messages AFTER cursor (for previous page)
+        query = query.where(created_at: { '$gt' => cursor })
+      end
+    end
+    
+    # Always order by newest first
+    messages = query.order(created_at: :desc)
+                    .limit(page_size + 1)
+                    .to_a
+    
+    # Detect if more pages exist
+    has_more = messages.length > page_size
+    messages = messages.take(page_size) if has_more
+    
+    # Build next/prev cursors
+    next_cursor = messages.last&.created_at.iso8601 if has_more
+    prev_cursor = messages.first&.created_at.iso8601 if cursor
+    
+    render json: {
+      messages: MessageSerializer.new(messages),
+      pagination: {
+        has_more: has_more,
+        next_cursor: next_cursor,
+        prev_cursor: prev_cursor,
+        page_size: page_size
+      }
+    }
+  end
+  
+  def create
+    message_params = params.require(:message).permit(:to, :body)
+    
+    message = current_user.messages.build(message_params)
+    message.status = 'queued'
+    
+    if message.save
+      # Immediately send async (enqueue job)
+      SendMessageJob.perform_later(message.id)
+      
+      render json: MessageSerializer.new(message), status: :created
+    else
+      render json: { errors: message.errors }, status: :unprocessable_entity
+    end
+  end
+end
+```
+
+**Frontend Implementation (Angular):**
+
+```typescript
+// message.service.ts
+@Injectable({ providedIn: 'root' })
+export class MessageService {
+  private readonly api = inject(HttpClient)
+  private readonly baseUrl = 'http://localhost:3000'
+  
+  // Cursor-based pagination state
+  private readonly messages = signal<Message[]>([])
+  private readonly pagination = signal<PaginationState>({
+    nextCursor: null,
+    prevCursor: null,
+    hasMore: false,
+    pageSize: 20
+  })
+  
+  readonly messages$ = this.messages.asReadonly()
+  readonly pagination$ = this.pagination.asReadonly()
+  
+  // Load first page
+  loadMessages(pageSize: number = 20): void {
+    this.fetchMessages(pageSize, null, 'next')
+  }
+  
+  // Load next page
+  loadNextPage(): void {
+    const state = this.pagination()
+    if (!state.nextCursor) return
+    
+    this.fetchMessages(state.pageSize, state.nextCursor, 'next')
+  }
+  
+  // Load previous page
+  loadPreviousPage(): void {
+    const state = this.pagination()
+    if (!state.prevCursor) return
+    
+    this.fetchMessages(state.pageSize, state.prevCursor, 'prev')
+  }
+  
+  // Core fetch logic
+  private fetchMessages(
+    pageSize: number,
+    cursor: string | null,
+    direction: 'next' | 'prev'
+  ): void {
+    const params = new HttpParams()
+      .set('page_size', pageSize.toString())
+      .set('direction', direction)
+    
+    if (cursor) {
+      params = params.set('cursor', cursor)
+    }
+    
+    this.api
+      .get<{
+        messages: Message[]
+        pagination: PaginationState
+      }>(`${this.baseUrl}/messages`, { params })
+      .subscribe({
+        next: (response) => {
+          this.messages.set(response.messages)
+          this.pagination.set(response.pagination)
+        },
+        error: (err) => console.error('Error loading messages:', err)
+      })
+  }
+}
+
+// Type definitions
+interface Message {
+  id: string
+  to: string
+  body: string
+  status: 'queued' | 'sent' | 'delivered' | 'failed'
+  created_at: string
+}
+
+interface PaginationState {
+  nextCursor: string | null
+  prevCursor: string | null
+  hasMore: boolean
+  pageSize: number
+}
+```
+
+**Frontend UI Component:**
+
+```typescript
+// message-list.component.ts
+@Component({
+  selector: 'app-message-list',
+  template: `
+    <div class="message-list">
+      <div *ngFor="let msg of messageService.messages$()" class="message-card">
+        <p>{{ msg.body }}</p>
+        <span class="status" [class]="msg.status">{{ msg.status }}</span>
+        <small>{{ msg.created_at | date:'short' }}</small>
+      </div>
+      
+      <div class="pagination-controls" *ngIf="messageService.pagination$() as pag">
+        <button 
+          (click)="messageService.loadPreviousPage()"
+          [disabled]="!pag.prevCursor"
+          class="btn-prev">
+          ← Previous
+        </button>
+        
+        <span class="page-info">
+          Showing {{ messageService.messages$().length }} messages
+          <span *ngIf="pag.hasMore">(more available)</span>
+        </span>
+        
+        <button 
+          (click)="messageService.loadNextPage()"
+          [disabled]="!pag.nextCursor"
+          class="btn-next">
+          Next →
+        </button>
+      </div>
+    </div>
+  `
+})
+export class MessageListComponent implements OnInit {
+  readonly messageService = inject(MessageService)
+  
+  ngOnInit(): void {
+    this.messageService.loadMessages(20)
+  }
+}
+```
+
+**Infinite Scroll Alternative:**
+
+```typescript
+// For modern UX: auto-load next page when user scrolls to bottom
+
+@Component({
+  selector: 'app-message-list',
+  template: `
+    <div class="message-list" (scroll)="onScroll($event)">
+      <div *ngFor="let msg of messageService.messages$()" class="message-card">
+        {{ msg.body }}
+      </div>
+      
+      <div *ngIf="isLoading()" class="spinner">Loading...</div>
+    </div>
+  `
+})
+export class MessageListComponent {
+  protected readonly messageService = inject(MessageService)
+  readonly isLoading = signal(false)
+  
+  onScroll(event: Event): void {
+    const element = event.target as HTMLElement
+    const threshold = element.scrollHeight - element.scrollTop - 500
+    
+    // User scrolled to within 500px of bottom
+    if (threshold < element.clientHeight && !this.isLoading()) {
+      const pag = this.messageService.pagination()
+      if (pag.hasMore) {
+        this.isLoading.set(true)
+        
+        this.messageService.loadNextPage()
+        // When loadNextPage completes, set isLoading to false
+        setTimeout(() => this.isLoading.set(false), 500)
+      }
+    }
+  }
+}
+```
+
+**API Query Performance:**
+
+```ruby
+# Query explanation: How MongoDB executes this efficiently
+# Index: { user_id: 1, created_at: -1 }
+
+# Query: Find messages before cursor
+db.messages.find({
+  user_id: user_id_oid,
+  created_at: { $lt: ISODate("2026-10-06T10:00:00Z") }
+})
+.sort({ created_at: -1 })
+.limit(21)
+
+# Execution plan:
+# 1. Use index on (user_id, created_at)
+# 2. Seek to user_id (fast index lookup)
+# 3. Scan 21 documents where created_at < cursor (fast, ordered index)
+# 4. Return 20 documents (+ 1 to detect more)
+
+# Performance: O(1) + O(20) = O(1) regardless of total message count!
+```
+
+**Common Pitfalls:**
+
+❌ **Don't do offset-based:**
+```ruby
+# SLOW on large offsets
+Message.where(user_id: id)
+       .order(created_at: :desc)
+       .offset(1000)
+       .limit(20)
+# MongoDB must skip 1000 documents even though we discard them!
+```
+
+❌ **Don't fetch all messages into memory:**
+```ruby
+# BAD: Loads all 50k messages
+messages = Message.where(user_id: id).to_a
+messages.sort_by(&:created_at).reverse
+messages.slice(0, 20)
+```
+
+✅ **Do use cursor + index:**
+```ruby
+# FAST: Uses index, fetches only 21 docs
+Message.where(user_id: id, created_at: {'$lt' => cursor})
+       .order(created_at: :desc)
+       .limit(21)
+```
+
+---
+
+## Question 9: Caching Strategy for Message Reading
+
+**Q: Do we need caching for reading messages to reduce MongoDB query latency? When should we cache vs. when shouldn't we?**
+
+### Answer:
+
+**When to Cache (and when NOT to):**
+
+| Scenario | Cache? | Why |
+|----------|--------|-----|
+| User reads own messages | ❌ No | Messages change frequently (status updates, new messages) |
+| Admin views user messages | ✅ Maybe | Reads only, doesn't change often |
+| Message stats/analytics | ✅ Yes | Expensive aggregation query, changes slowly |
+| Status badges (queued/sent) | ❓ Complex | High cache invalidation cost |
+| Auth token validation | ✅ Yes | Expensive JWT verification, token lifetime controls TTL |
+
+**Key Insight: Caching Messages is Expensive**
+
+Reason: Message status changes constantly (queued → sent → delivered)
+- Cache hit rate will be low (most reads happen before status changes)
+- Cache invalidation becomes complex (need to invalidate on every webhook)
+- Network latency to Redis (1-5ms) vs. MongoDB (5-20ms)—not huge gain
+
+**Better Strategy: Query Optimization + Connection Pooling**
+
+Instead of caching, optimize the database:
+
+```ruby
+# 1. Connection pooling (reduce connection overhead)
+# mongoid.yml
+development:
+  clients:
+    default:
+      database: mysms_dev
+      hosts:
+        - localhost:27017
+      options:
+        max_pool_size: 20        # Connection pool
+        min_pool_size: 5
+        wait_queue_timeout: 1
+
+# 2. Projection (only fetch fields you need)
+# DON'T fetch all fields
+Message.where(user_id: id)
+       .order(created_at: :desc)
+       .limit(20)
+
+# DO project only needed fields
+Message.where(user_id: id)
+       .order(created_at: :desc)
+       .limit(20)
+       .only(:id, :to, :body, :status, :created_at)
+
+# 3. Use read preference (read from secondaries if replica set)
+Message.with(read: { mode: :secondary }) do
+  Message.where(user_id: id).limit(20)
+end
+```
+
+**When Caching IS Worth It:**
+
+**Scenario 1: Message Stats/Analytics**
+
+```ruby
+# Query: "How many messages sent today?"
+# Without cache: Full collection scan
+Message.where(user_id: id, created_at: { '$gte' => 1.day.ago })
+       .count  # Slow: scans all matching documents
+
+# With cache:
+def message_count_today
+  cache_key = "user:#{user_id}:message_count:today"
+  
+  Rails.cache.fetch(cache_key, expires_in: 1.hour) do
+    Message.where(
+      user_id: user_id,
+      created_at: { '$gte' => Time.now.beginning_of_day }
+    ).count
+  end
+end
+
+# Result: First call slow, next 59 calls instant (1 hour TTL)
+```
+
+**Scenario 2: User Profile Cache (Status + Message Count)**
+
+```ruby
+class User
+  def message_stats
+    cache_key = "user:#{id}:stats"
+    
+    Rails.cache.fetch(cache_key, expires_in: 1.hour) do
+      {
+        total_messages: messages.count,
+        delivered_count: messages.where(status: 'delivered').count,
+        failed_count: messages.where(status: 'failed').count,
+        avg_delivery_time: calculate_avg_delivery_time
+      }
+    end
+  end
+  
+  # Invalidate cache when message status changes
+  def invalidate_stats_cache
+    Rails.cache.delete("user:#{id}:stats")
+  end
+end
+
+# In webhook handler:
+def update_status
+  message = Message.find_by(twilio_sid: params[:MessageSid])
+  message.update(status: params[:MessageStatus])
+  
+  # Invalidate user's stats cache
+  message.user.invalidate_stats_cache
+end
+```
+
+**Scenario 3: Message Content Caching (Read-Only)**
+
+Only cache if messages are immutable (which they're not in our case):
+
+```ruby
+# ❌ DON'T cache individual messages
+message = Message.find(id)  # Don't cache this
+
+# ✅ DO cache if you had immutable, read-only data
+# Example: "Get message by ID" in a system where messages never change
+Rails.cache.fetch("message:#{id}", expires_in: 1.day) do
+  Message.find(id)
+end
+```
+
+**Smart Caching Pattern: Cache Invalidation on Write**
+
+```ruby
+class Message
+  after_save :invalidate_caches
+  
+  def invalidate_caches
+    # When message created/updated, invalidate relevant caches
+    Rails.cache.delete("user:#{user_id}:stats")
+    Rails.cache.delete("user:#{user_id}:messages:page:1")
+    # Don't cache other pages—they're too volatile
+  end
+end
+
+# Webhook updates status
+def webhooks_twilio_status
+  message = Message.find_by(twilio_sid: params[:MessageSid])
+  old_status = message.status
+  
+  message.update(status: params[:MessageStatus])
+  
+  # Status changed: invalidate stats cache
+  if message.status != old_status
+    message.user.invalidate_stats_cache
+  end
+end
+```
+
+**Recommended Caching Strategy (by scale):**
+
+**Stage 1: Current (< 10k messages/user)**
+- ❌ Don't cache messages (too volatile)
+- ✅ Cache user stats (refreshed hourly)
+- ✅ Cache auth tokens (already done via JWT)
+- Tool: Rails cache (memory) or Redis
+
+**Stage 2: Scaling (10k-100k messages/user)**
+- ❌ Still don't cache full messages
+- ✅ Cache aggregated stats
+- ✅ Cache frequently-accessed metadata
+- ✅ Add read replicas for read-heavy workloads
+- Tool: Redis + MongoDB replica set
+
+**Stage 3: Massive Scale (100k+ messages/user)**
+- ❌ Still don't cache volatile messages
+- ✅ Cache everything else
+- ✅ Use separate cache tier (ElastiCache)
+- ✅ Consider CQRS (Command Query Responsibility Segregation)
+  - Separate write path (MongoDB) from read path (cache-heavy)
+- Tool: Redis cluster + MongoDB sharding
+
+**Performance Comparison:**
+
+```
+Without any optimization:
+- GET /messages → MongoDB query → 150ms
+- Network round trip → +50ms
+- Total: 200ms
+
+With cursor pagination (no cache):
+- GET /messages (page 2) → MongoDB query (uses index) → 20ms
+- Network round trip → +50ms
+- Total: 70ms ✅ 3x faster!
+
+With cache (stats only):
+- GET /messages stats → Redis hit → 2ms
+- Payload smaller → +10ms
+- Total: 12ms ✅ 17x faster!
+```
+
+**Don't Cache If:**
+1. Data changes frequently (> 10% of reads update it)
+2. Consistency is critical (compliance, financial)
+3. Invalidation is complex (affects many cache keys)
+4. Data size is huge (each message object is large)
+
+**Recommended Implementation (Pragmatic):**
+
+```ruby
+class MessagesController < ApplicationController
+  def index
+    page_size = params[:page_size] || 20
+    cursor = params[:cursor]
+    direction = params[:direction] || 'next'
+    
+    # No message caching—just optimize the query
+    messages = Message.where(user_id: current_user.id)
+    
+    if cursor
+      if direction == 'next'
+        messages = messages.where(created_at: {'$lt' => cursor})
+      else
+        messages = messages.where(created_at: {'$gt' => cursor})
+      end
+    end
+    
+    # Optimization 1: Index on (user_id, created_at)
+    # Optimization 2: Project only needed fields
+    messages = messages.order(created_at: :desc)
+                      .limit(page_size + 1)
+                      .only(:id, :to, :body, :status, :created_at)
+                      .to_a
+    
+    has_more = messages.length > page_size
+    messages = messages.take(page_size) if has_more
+    
+    # Cache user stats (not messages)
+    user_stats = Rails.cache.fetch(
+      "user:#{current_user.id}:stats",
+      expires_in: 1.hour
+    ) do
+      {
+        total: current_user.messages.count,
+        delivered: current_user.messages.where(status: 'delivered').count
+      }
+    end
+    
+    render json: {
+      messages: MessageSerializer.new(messages),
+      pagination: { has_more: has_more, next_cursor: messages.last&.created_at },
+      stats: user_stats
+    }
+  end
+end
+```
+
+**Summary:**
+- **Don't cache messages** (too volatile, low hit rate)
+- **Do cache stats** (expensive queries, slow change rate)
+- **Do optimize queries** (indexing, projection, connection pooling)
+- **Add cache when bottleneck proven** (measure first with APM)
+
+---
+
+### Answer:
+
+**Current Approach (Polling):**
+```
+Frontend: setInterval(() => GET /messages, 2000ms)  // Poll every 2 seconds
+  ↓
+Backend: Query MongoDB for user's messages
+  ↓
+Return JSON to frontend
+  ↓
+Frontend re-renders if changed
+```
+
+**Issues:**
+- Wasteful: 30 polls/minute even if no messages sent
+- Latency: User sees status 0-2 seconds after event
+- Database load: N users × M polls/minute queries
+- Network overhead: Redundant HTTP headers + TLS handshake
+
+**WebSocket Approach:**
+```
+Frontend: ws = new WebSocket('wss://api.myapp.com/ws')
+  ↓
+Backend: Keep connection open, push updates instantly
+  ↓
+(Twilio webhook arrives)
+  ↓
+Backend sends: { type: 'message_status', message_id: "123", status: "delivered" }
+  ↓
+Frontend receives, updates UI instantly
+```
+
+**Trade-Offs:**
+
+| Metric | Polling | WebSocket |
+|--------|---------|-----------|
+| **Latency** | 0-2s | < 100ms |
+| **Network** | High (headers every 2s) | Low (connection reuse) |
+| **Server Connections** | N users = N requests/min | N users = N persistent connections |
+| **Database Load** | High (M queries/min per user) | Low (only on webhook) |
+| **Implementation** | Simple | Complex (connection mgmt, reconnect) |
+| **Browser Support** | All | Modern only |
+| **Infrastructure** | Stateless (scales easily) | Stateful (affinity needed) |
+| **Cost (AWS ALB)** | Cheap | More expensive (connection mgmt) |
+
+**When to Switch:**
+
+- **Polling is fine if:**
+  - < 1000 concurrent users
+  - Status updates not time-critical
+  - Mobile app (battery drain from constant polling)
+
+- **WebSocket needed if:**
+  - > 10k concurrent users
+  - Need real-time notifications (< 1s)
+  - Mobile app demanding low latency
+
+**WebSocket Implementation (if needed):**
+
+```ruby
+# Backend: Rails + ActionCable
+
+class MessagesChannel < ApplicationCable::Channel
+  def subscribed
+    current_user = User.find(decoded_token['user_id'])
+    stream_for current_user
+  end
+
+  def unsubscribed
+    # Clean up
+  end
+end
+
+# In webhook handler:
+webhook_payload = params[:MessageSid]
+message = Message.find_by(twilio_sid: webhook_payload)
+user = message.user
+
+# Broadcast to user's WebSocket
+MessagesChannel.broadcast_to(user, {
+  type: 'status_updated',
+  message_id: message.id,
+  status: message.status
+})
+
+# Frontend: Angular
+const ws = new WebSocket(
+  'wss://api.myapp.com/cable?token=' + token
+)
+
+ws.onmessage = (event) => {
+  const { type, message_id, status } = JSON.parse(event.data)
+  if (type === 'status_updated') {
+    this.updateMessageStatus(message_id, status)
+  }
+}
+```
+
+**Scaling WebSockets:**
+
+```ruby
+# Problem: WebSocket server is stateful
+# 10 servers, user connects to server #3, 
+# webhook handler on server #7 can't push to user
+
+# Solution: Pub/Sub + Redis
+
+# Each server subscribes to user's channel in Redis
+class MessagesChannel
+  def subscribed
+    user = current_user
+    redis = Redis.new
+    
+    # Subscribe to Redis channel
+    redis.subscribe("user:#{user.id}:messages") do |on|
+      on.message do |channel, data|
+        transmit JSON.parse(data)
+      end
+    end
+  end
+end
+
+# Webhook handler (any server):
+user = message.user
+redis = Redis.new
+redis.publish("user:#{user.id}:messages", {
+  type: 'status_updated',
+  message_id: message.id,
+  status: message.status
+}.to_json)
+
+# Result: Message published to Redis channel
+# All servers listening to that channel receive it
+# Their WebSocket connections transmit to frontend
+```
+
+**Recommendation:**
+- **Start with polling** (current approach is fine for < 10k users)
+- **Switch to WebSocket when:**
+  - User growth demands it (> 10k concurrent)
+  - OR: Business requires real-time (< 1s) notifications
+  - Cost of real-time justifies complexity
+
+---
+
+## Summary Table: Evolution by Scale
+
+| Stage | Users | Messages/sec | Architecture Changes |
+|-------|-------|--------------|----------------------|
+| **Current** | < 1k | < 10 | Single Rails server, local MongoDB, polling, no pagination |
+| **Stage 1** | 1-10k | 10-100 | Add Sidekiq for async sending, cursor-based pagination, basic monitoring |
+| **Stage 2** | 10-100k | 100-1k | Horizontal scaling, MongoDB sharding by user_id, cache stats (not messages), add caching (Redis) |
+| **Stage 3** | 100k-1M | 1k-10k | Kafka for webhooks, multi-region, real-time WebSocket, CQRS for heavy reads |
+| **Stage 4** | 1M+ | 10k+ | Distributed databases, edge servers, complex routing, separate read/write optimization |
+
+---
+
+## Key Takeaways
+
+1. **Database**: MongoDB with sharding by user_id scales well for this use case
+2. **Pagination**: Cursor-based (not offset) for messages; enables fast queries at any scale
+3. **Caching**: Don't cache volatile messages; cache stats + user metadata instead
+4. **Query Optimization**: Indexing + projection + connection pooling beat caching for read queries
+5. **Async**: Introduce job queues (Sidekiq) once latency becomes an issue
+6. **Webhooks**: Buffer in Redis, batch process to reduce database load
+7. **Auth**: JWT in httpOnly cookies, refresh tokens, token versioning for revocation
+8. **Rate Limiting**: Multi-layer (IP, user, recipient, plan)
+9. **Real-Time**: Polling is fine until 10k+ users; then consider WebSocket
+10. **Reliability**: Retry logic + idempotency keys prevent duplicate messages
+11. **Monitoring**: Track delivery rate, webhook latency, failed messages, query performance
+
+## Interview Topics Covered (10 Questions)
+
+1. ✅ Database Scaling & Sharding Strategy
+2. ✅ Indexing & Query Optimization  
+3. ✅ Message Queues & Async Processing
+4. ✅ Real-Time Webhook Handling
+5. ✅ Failure Recovery & SLAs
+6. ✅ Security & Token Management
+7. ✅ Rate Limiting & DDoS Protection
+8. ✅ **Pagination for Large Datasets** ← cursor-based approach
+9. ✅ **Caching Strategy for Read Performance** ← when to cache vs. optimize queries
+10. ✅ WebSocket vs. Polling Trade-offs
+
+---
+
+**Document Generated**: October 6, 2026  
+**Prepared for**: Senior Software Engineer Interview  
+**App**: MySMS Messenger

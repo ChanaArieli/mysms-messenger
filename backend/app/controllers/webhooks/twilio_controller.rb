@@ -4,7 +4,17 @@ module Webhooks
 
     def status
       message = Message.find_by(twilio_sid: params['MessageSid'])
-      message&.update(status: params['MessageStatus'])
+
+      if message
+        if message.update(status: params['MessageStatus'])
+          Rails.logger.info("Message #{message.id} status updated to #{params['MessageStatus']}")
+        else
+          Rails.logger.error("Failed to update message #{message.id}: #{message.errors.full_messages.join(', ')}")
+        end
+      else
+        Rails.logger.warn("Webhook received for unknown message SID: #{params['MessageSid']}")
+      end
+
       head :no_content
     end
 

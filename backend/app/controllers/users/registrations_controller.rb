@@ -1,7 +1,8 @@
 module Users
   class RegistrationsController < Devise::RegistrationsController
     def create
-      body = JSON.parse(request.body.string)
+      request_body = request.body.string
+      body = JSON.parse(request_body)
       user_params = body['user'] || {}
 
       @user = User.new(
@@ -29,21 +30,9 @@ module Users
     private
 
     def generate_jwt(user)
-      payload = { sub: user.id.to_s, iat: Time.current.to_i }
+      payload = { sub: user.id.to_s, iat: Time.current.to_i, exp: (Time.current + 24.hours).to_i }
       secret = ENV.fetch('DEVISE_JWT_SECRET_KEY')
       JWT.encode(payload, secret, 'HS256')
-    end
-
-    def respond_with(resource, _opts = {})
-      if resource.persisted?
-        render json: {
-          user: { id: resource.id.to_s, email: resource.email }
-        }, status: 201
-      else
-        render json: {
-          errors: resource.errors.messages.transform_values { |msgs| msgs.join(', ') }
-        }, status: 422
-      end
     end
   end
 end

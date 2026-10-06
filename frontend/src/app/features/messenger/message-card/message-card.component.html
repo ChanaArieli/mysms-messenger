@@ -12,8 +12,8 @@
     <span class="status-badge" [class]="getStatusColor()">
       {{ getStatusText() }}
     </span>
-    @if (message.error_message) {
-      <span class="error-text">{{ message.error_message }}</span>
+    @if (getSafeErrorMessage()) {
+      <span class="error-text">{{ getSafeErrorMessage() }}</span>
     }
   </div>
 </div>

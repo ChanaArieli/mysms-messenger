@@ -28,11 +28,19 @@ export class ComposeBoxComponent {
       return;
     }
 
+    if (!this.isValidPhoneNumber(this.to)) {
+      this.error.set('Phone number must be in E.164 format (e.g., +15551234567)');
+      return;
+    }
+
     this.isLoading.set(true);
     this.error.set('');
 
     this.messageSent.emit({ to: this.to, body: this.body });
-    // Parent component will reset isLoading after API response
+  }
+
+  private isValidPhoneNumber(phone: string): boolean {
+    return /^\+?[1-9]\d{1,14}$/.test(phone.trim());
   }
 
   resetForm(): void {

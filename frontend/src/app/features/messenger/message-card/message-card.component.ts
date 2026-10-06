@@ -29,4 +29,12 @@ export class MessageCardComponent {
   getStatusText(): string {
     return this.message.status.charAt(0).toUpperCase() + this.message.status.slice(1);
   }
+
+  getSafeErrorMessage(): string {
+    if (!this.message.error_message) {
+      return '';
+    }
+    const msg = this.message.error_message.substring(0, 200);
+    return msg.replace(/[<>]/g, '');
+  }
 }

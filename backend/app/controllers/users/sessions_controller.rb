@@ -3,12 +3,18 @@ module Users
     skip_before_action :verify_signed_out_user, only: :destroy
 
     def create
-      body = JSON.parse(request.body.string)
+      request_body = request.body.string
+      body = JSON.parse(request_body)
       user_params = body['user'] || {}
 
-      user = User.find_by(email: user_params['email'])
+      email = user_params['email'].to_s.strip
+      password = user_params['password'].to_s
 
-      if user&.valid_password?(user_params['password'])
+      if email.present? && password.present?
+        user = User.find_by(email: email)
+      end
+
+      if user&.valid_password?(password)
         token = generate_jwt(user)
         response.headers['Content-Type'] = 'application/json'
         response.headers['Authorization'] = "Bearer #{token}"
@@ -34,20 +40,11 @@ module Users
     def generate_jwt(user)
       payload = {
         sub: user.id.to_s,
-        iat: Time.current.to_i
+        iat: Time.current.to_i,
+        exp: (Time.current + 24.hours).to_i
       }
       secret = ENV.fetch('DEVISE_JWT_SECRET_KEY')
       JWT.encode(payload, secret, 'HS256')
-    end
-
-    def respond_with(resource, _opts = {})
-      response.headers['Content-Type'] = 'application/json'
-      response.status = 200
-      self.response_body = JSON.generate({ user: { id: resource.id.to_s, email: resource.email } })
-    end
-
-    def respond_to_on_destroy
-      head :no_content
     end
   end
 end
