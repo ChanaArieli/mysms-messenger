@@ -2362,7 +2362,7 @@ private async initializeAuth(): Promise<void> {
 12. **Monitoring**: APM is critical—track delivery rate, webhook latency, query performance, response times
 13. **Session Validation**: Validate tokens with /me endpoint on app init (security-first approach); migrate to refresh token pattern for production
 
-## Interview Topics Covered (12 Questions)
+## Architecture Topics Covered
 
 1. ✅ Database Scaling & Sharding Strategy
 2. ✅ Indexing & Query Optimization  
