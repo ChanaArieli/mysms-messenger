@@ -37,6 +37,10 @@ module Users
       response.headers['Content-Type'] = 'application/json'
       response.status = 400
       self.response_body = JSON.generate({ errors: { base: 'Invalid JSON' } })
+    rescue Mongoid::Errors::DocumentNotFound
+      response.headers['Content-Type'] = 'application/json'
+      response.status = 401
+      self.response_body = JSON.generate({ errors: { base: 'No account found with this email. Please sign up.' } })
     rescue StandardError => e
       Rails.logger.error("Login error: #{e.class} - #{e.message}")
       Rails.logger.error(e.backtrace.join("\n"))
