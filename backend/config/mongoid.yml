@@ -16,6 +16,6 @@ production:
       uri: <%= ENV['MONGODB_URI'] || 'mongodb://localhost:27017/mysms_prod' %>
       options:
         retry_writes: true
-        connect_timeout: 2
-        socket_timeout: 2
-        server_selection_timeout: 2
+        connect_timeout: 10
+        socket_timeout: 10
+        server_selection_timeout: 10
