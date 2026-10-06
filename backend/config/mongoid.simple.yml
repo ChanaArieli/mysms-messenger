@@ -1,0 +1,16 @@
+development:
+  clients:
+    default:
+      uri: <%= ENV['MONGODB_URI'] || 'mongodb://localhost:27017/mysms_dev' %>
+
+test:
+  clients:
+    default:
+      uri: <%= ENV['MONGODB_URI_TEST'] || 'mongodb://localhost:27017/mysms_test' %>
+
+production:
+  clients:
+    default:
+      uri: <%= ENV['MONGODB_URI'] || 'mongodb://localhost:27017/mysms_prod' %>
+      options:
+        retry_writes: true

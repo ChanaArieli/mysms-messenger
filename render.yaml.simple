@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: mysms-messenger
+    runtime: docker
+    dockerfilePath: Dockerfile.simple
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: RAILS_ENV
+        value: production
+      - key: RAILS_LOG_TO_STDOUT
+        value: "true"
+      - key: MONGODB_URI
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false
+      - key: TWILIO_STATUS_CALLBACK_URL
+        sync: false
+      - key: DEVISE_JWT_SECRET_KEY
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false
