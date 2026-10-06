@@ -14,7 +14,7 @@ class User
   index({ email: 1 }, { unique: true })
   index({ jti: 1 })
 
-  validates :email, presence: true, uniqueness: true
+  validates :email, presence: true
 
   has_many :messages, class_name: 'Message', inverse_of: :user, dependent: :destroy
 end
