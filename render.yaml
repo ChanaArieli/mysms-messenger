@@ -2,7 +2,6 @@ services:
   - type: web
     name: mysms-messenger
     runtime: docker
-    dockerfilePath: Dockerfile.production
     plan: free
     autoDeploy: true
     envVars:
