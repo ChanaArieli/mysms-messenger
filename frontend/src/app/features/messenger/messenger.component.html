@@ -2,12 +2,13 @@
   <div class="header">
     <h1>MySMS Messenger</h1>
     <div class="user-info">
-      <span>{{ currentUser()?.email }}</span>
-      <button (click)="logout()" class="logout-btn">Logout</button>
+      <span *ngIf="!isInitialized()">Loading...</span>
+      <span *ngIf="isInitialized()">{{ currentUser()?.email }}</span>
+      <button (click)="logout()" class="logout-btn" [disabled]="!isInitialized()">Logout</button>
     </div>
   </div>
 
-  <div class="content">
+  <div class="content" *ngIf="isInitialized()">
     <div class="compose-section">
       <app-compose-box
         (messageSent)="onMessageSent($event)"

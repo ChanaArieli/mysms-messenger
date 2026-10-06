@@ -10,5 +10,6 @@ Rails.application.routes.draw do
     }
 
   resources :messages, only: [:index, :create]
+  get 'me', to: 'users#me'
   post 'webhooks/twilio/status', to: 'webhooks/twilio#status'
 end

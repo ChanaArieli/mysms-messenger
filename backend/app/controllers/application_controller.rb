@@ -6,7 +6,9 @@ class ApplicationController < ActionController::API
     token = extract_token_from_request
 
     if token.blank?
-      render json: { error: 'Missing authentication token' }, status: :unauthorized
+      response.headers['Content-Type'] = 'application/json'
+      response.status = 401
+      self.response_body = JSON.generate({ error: 'Missing authentication token' })
       return
     end
 
@@ -15,7 +17,9 @@ class ApplicationController < ActionController::API
       user = User.find(payload['sub'])
       sign_in user, store: false
     rescue JWT::DecodeError, Mongoid::Errors::DocumentNotFound
-      render json: { error: 'Invalid or expired token' }, status: :unauthorized
+      response.headers['Content-Type'] = 'application/json'
+      response.status = 401
+      self.response_body = JSON.generate({ error: 'Invalid or expired token' })
     end
   end
 
@@ -27,6 +31,6 @@ class ApplicationController < ActionController::API
   end
 
   def decode_jwt(token)
-    JWT.decode(token, ENV.fetch('DEVISE_JWT_SECRET_KEY'), true, algorithm: 'HS256').first
+    JWT.decode(token, ENV.fetch('DEVISE_JWT_SECRET_KEY'), true, { algorithm: 'HS256' }).first
   end
 end

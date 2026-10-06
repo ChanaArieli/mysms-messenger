@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
 import { AuthService } from '../../core/auth/auth.service';
 import { MessageService } from '../../core/services/message.service';
+import { User } from '../../core/models/user.model';
 import { ComposeBoxComponent } from './compose-box/compose-box.component';
 import { MessageListComponent } from './message-list/message-list.component';
 
@@ -18,7 +19,8 @@ export class MessengerComponent {
   @ViewChild(MessageListComponent) messageList!: MessageListComponent;
 
   apiError = signal<string | null>(null);
-  currentUser!: any;
+  currentUser!: ReturnType<typeof signal<User | null>>;
+  isInitialized!: ReturnType<typeof signal<boolean>>;
 
   constructor(
     private authService: AuthService,
@@ -26,6 +28,7 @@ export class MessengerComponent {
     private router: Router
   ) {
     this.currentUser = this.authService.currentUser;
+    this.isInitialized = this.authService.isInitialized;
   }
 
   onMessageSent(data: { to: string; body: string }): void {
