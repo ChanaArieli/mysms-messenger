@@ -54,7 +54,8 @@ export class LoginComponent {
         if (errors) {
           if (typeof errors === 'object') {
             const errorMessages = Object.entries(errors)
-              .map(([field, message]) => `${field}: ${message}`)
+              .map(([, message]) => message)
+              .flat()
               .join(', ');
             this.error.set(errorMessages);
           } else {

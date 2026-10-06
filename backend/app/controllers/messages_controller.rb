@@ -1,7 +1,8 @@
 class MessagesController < ApplicationController
   def index
+    limit = (params[:limit] || 50).to_i.clamp(1, 100)
     start_time = Time.current
-    messages = current_user.messages.order(created_at: :desc)
+    messages = current_user.messages.order(created_at: :desc).limit(limit)
     query_time = Time.current - start_time
 
     serialize_start = Time.current
@@ -10,7 +11,7 @@ class MessagesController < ApplicationController
     self.response_body = JSON.generate(messages.map { |m| message_json(m) })
     serialize_time = Time.current - serialize_start
 
-    Rails.logger.info("Messages#index - Query: #{query_time*1000.0}ms, Serialize: #{serialize_time*1000.0}ms, Total: #{(query_time + serialize_time)*1000.0}ms")
+    Rails.logger.info("Messages#index - Query: #{query_time*1000.0}ms, Serialize: #{serialize_time*1000.0}ms, Total: #{(query_time + serialize_time)*1000.0}ms, Count: #{messages.count}")
   end
 
   def create
