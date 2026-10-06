@@ -4,16 +4,14 @@ import { Message } from '../models/message.model';
 
 @Injectable({ providedIn: 'root' })
 export class MessageService {
-  private readonly apiUrl = 'http://localhost:3000';
-
   constructor(private http: HttpClient) {}
 
   getMessages() {
-    return this.http.get<Message[]>(`${this.apiUrl}/messages`);
+    return this.http.get<Message[]>(`/messages`);
   }
 
   sendMessage(to: string, body: string) {
-    return this.http.post<Message>(`${this.apiUrl}/messages`, {
+    return this.http.post<Message>(`/messages`, {
       message: { to, body }
     });
   }

@@ -7,7 +7,6 @@ import { of } from 'rxjs';
 
 @Injectable({ providedIn: 'root' })
 export class AuthService {
-  private readonly apiUrl = 'http://localhost:3000';
   currentUser = signal<User | null>(null);
   isLoggedIn = signal(false);
   isInitialized = signal(false);
@@ -29,7 +28,7 @@ export class AuthService {
   }
 
   private validateSession(): void {
-    this.http.get<{ user: User }>(`${this.apiUrl}/me`).pipe(
+    this.http.get<{ user: User }>(`/me`).pipe(
       tap(res => {
         if (res.user) {
           this.currentUser.set(res.user);
@@ -51,7 +50,7 @@ export class AuthService {
 
   signup(email: string, password: string) {
     return this.http.post<{ user: User }>(
-      `${this.apiUrl}/signup`,
+      `/signup`,
       { user: { email, password, password_confirmation: password } },
       { observe: 'response' }
     ).pipe(
@@ -69,7 +68,7 @@ export class AuthService {
 
   login(email: string, password: string) {
     return this.http.post<{ user: User }>(
-      `${this.apiUrl}/login`,
+      `/login`,
       { user: { email, password } },
       { observe: 'response' }
     ).pipe(
@@ -86,7 +85,7 @@ export class AuthService {
   }
 
   logout() {
-    return this.http.delete(`${this.apiUrl}/logout`).pipe(
+    return this.http.delete(`/logout`).pipe(
       tap(() => {
         this.currentUser.set(null);
         this.isLoggedIn.set(false);
