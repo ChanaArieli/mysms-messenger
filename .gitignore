@@ -12,7 +12,7 @@ backend/public/packs/
 backend/public/packs-test/
 backend/node_modules/
 backend/.DS_Store
-backend/Gemfile.lock
+# backend/Gemfile.lock - needed for production deployment
 
 # Frontend (Angular)
 frontend/node_modules/
