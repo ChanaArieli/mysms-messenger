@@ -1,16 +1,15 @@
-# System Design Interview Q&A
+# Architecture & Scaling Strategy
 ## MySMS Messenger App
 
-**Conducted**: 2026-10-06  
-**Focus Areas**: Scale, Architecture, Trade-offs, Senior Software Engineering
+**Document Date**: October 6, 2026  
+**Purpose**: Design decisions, future scaling considerations, and architectural trade-offs  
+**Audience**: Technical interviewers, architects, future maintainers
 
 ---
 
-## Question 1: Database Scaling
+## 1. Database Scaling & Sharding Strategy
 
-**Q: Your current architecture uses MongoDB with Mongoid. As you scale to millions of users sending thousands of messages per second, how would you handle the message volume? Would you reconsider the MongoDB + Mongoid choice?**
-
-### Answer:
+### Current State & Rationale:
 
 **Current State:**
 MongoDB + Mongoid is a good fit for the current stage because:
@@ -52,11 +51,9 @@ I'd **keep MongoDB but evolve the architecture**:
 
 ---
 
-## Question 2: Indexing & Query Optimization
+## 2. Indexing & Query Optimization
 
-**Q: What indexing strategy would you implement to keep query performance fast as the messages collection grows to billions of records? Would you partition/shard data?**
 
-### Answer:
 
 **Indexing Strategy:**
 
@@ -100,11 +97,9 @@ db.messages.createIndex({ to: 1, user_id: 1 })
 
 ---
 
-## Question 3: Message Queue & Async Processing
+## 3. Message Queue & Async Processing
 
-**Q: Currently, TwilioSenderService sends synchronously in the request/response cycle. What happens if Twilio is slow or down? At what point would you introduce a message queue?**
 
-### Answer:
 
 **Current Problem:**
 ```
@@ -204,11 +199,9 @@ Issues:
 
 ---
 
-## Question 4: Real-Time Status Updates & Webhooks
+## 4. Real-Time Status Updates & Webhooks
 
-**Q: How would you handle the real-time status updates from Twilio webhooks at scale without overwhelming the database?**
 
-### Answer:
 
 **Current Approach:**
 - Twilio → `POST /webhooks/twilio/status`
@@ -287,11 +280,9 @@ Database.update(message: 123, status: "delivered")
 
 ---
 
-## Question 5: Monitoring & Failure Recovery
+## 5. Monitoring & Failure Recovery
 
-**Q: How would you track failed messages? What SLAs would you promise? How would you implement retries without creating duplicates?**
 
-### Answer:
 
 **Current State:**
 - Failed messages stored in `error_message` field
@@ -493,11 +484,9 @@ end
 
 ---
 
-## Question 6: Security & Authentication at Scale
+## 6. Security & Authentication at Scale
 
-**Q: You're using JWT tokens stored in localStorage. What are the security implications? How would you handle token refresh and revocation at scale?**
 
-### Answer:
 
 **Current Approach & Risks:**
 
@@ -680,11 +669,9 @@ end
 
 ---
 
-## Question 7: Rate Limiting & Abuse Prevention
+## 7. Rate Limiting & Abuse Prevention
 
-**Q: How would you prevent abuse (spam messages)? Where would rate limiting live? How would you handle DDoS on webhooks?**
 
-### Answer:
 
 **Rate Limiting Strategy:**
 
@@ -863,11 +850,9 @@ end
 
 ---
 
-## Question 8: Pagination for Message History
+## 8. Pagination for Message History
 
-**Q: With thousands of messages per user, how would you handle pagination on GET /messages? What's the best approach for both frontend and backend?**
 
-### Answer:
 
 **Current Problem:**
 ```
@@ -1210,11 +1195,9 @@ Message.where(user_id: id, created_at: {'$lt' => cursor})
 
 ---
 
-## Question 9: Caching Strategy for Message Reading
+## 9. Caching Strategy for Message Reading
 
-**Q: Do we need caching for reading messages to reduce MongoDB query latency? When should we cache vs. when shouldn't we?**
 
-### Answer:
 
 **When to Cache (and when NOT to):**
 
@@ -1476,11 +1459,9 @@ end
 
 ---
 
-## Question 10: Separate Read & Write Databases
+## 10. Separate Read & Write Databases
 
-**Q: Do we need separate databases—one optimized for writing (messages) and one fast for reading (message retrieval)? Reading is much more used than writing.**
 
-### Answer:
 
 **The Short Answer:**
 Start with **read replicas** (same database, multiple copies), not separate databases. Only use completely separate databases (CQRS) when read optimization becomes a bottleneck that replicas can't solve.
@@ -1934,9 +1915,8 @@ No. Use this progression:
 
 ---
 
-## Question 11: WebSocket vs Polling for Real-Time Updates
+## 11. WebSocket vs Polling for Real-Time Updates
 
-**Q: Currently you poll for message status. Would you switch to WebSockets at scale? What are the trade-offs?**
 
 **Current Approach (Polling):**
 ```
@@ -2081,11 +2061,9 @@ redis.publish("user:#{user.id}:messages", {
 
 ---
 
-## Question 12: Session Validation Strategy on App Initialization
+## 12. Session Validation Strategy on App Initialization
 
-**Q: When a user refreshes the page or reopens the app, how should you validate that their session is still valid? What are the trade-offs between different approaches?**
 
-### Answer:
 
 **Problem Statement:**
 

@@ -12,6 +12,8 @@ A full-stack SMS messaging application built with Rails (backend), Angular (fron
 
 ## Architecture
 
+📖 **[Read the Architecture & Scaling Strategy Document](./ARCHITECTURE.md)** - Comprehensive design decisions, future scaling considerations, and architectural trade-offs for 10k+ users
+
 ### Tech Stack
 - **Backend**: Ruby on Rails 7.2 API-only mode
 - **Frontend**: Angular 19 with standalone components
