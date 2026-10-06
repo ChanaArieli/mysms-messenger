@@ -1,12 +1,18 @@
 services:
   - type: web
     name: mysms-messenger
-    runtime: docker
+    runtime: ruby
     plan: free
+    rootDir: backend
+    buildCommand: "./bin/render-build.sh"
+    startCommand: "bundle exec puma -C config/puma.rb"
+    healthCheckPath: /up
     autoDeploy: true
     envVars:
       - key: RAILS_ENV
         value: production
+      - key: RAILS_MAX_THREADS
+        value: "3"
       - key: NODE_ENV
         value: production
       - key: DEVISE_JWT_SECRET_KEY

@@ -1,13 +1,9 @@
-# Puma single-threaded configuration for Render free tier
-# Minimize threads and workers to avoid initialization hangs
+# Puma configuration
+threads_count = ENV.fetch("RAILS_MAX_THREADS", 3)
+threads threads_count, threads_count
 
-threads 2, 5
-workers 0
+port ENV.fetch("PORT", 3000)
 
-port ENV.fetch("PORT") { 3000 }
-environment ENV.fetch("RAILS_ENV") { "development" }
-
-# Don't preload app in production to avoid timeout on startup
-# Render will send SIGTERM if app takes too long to start
-# Plugin for graceful restarts
 plugin :tmp_restart
+
+pidfile ENV["PIDFILE"] if ENV["PIDFILE"]

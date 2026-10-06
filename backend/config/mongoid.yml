@@ -13,8 +13,6 @@ test:
 production:
   clients:
     default:
-      uri: <%= ENV.fetch('MONGODB_URI', 'mongodb://localhost:27017/mysms_prod') %>
+      uri: <%= ENV.fetch('MONGODB_URI') %>
       options:
         retry_writes: true
-        connect_timeout: 5
-        socket_timeout: 5
