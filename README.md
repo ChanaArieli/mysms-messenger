@@ -12,12 +12,121 @@ A full-stack SMS messaging application built with Rails (backend), Angular (fron
 
 ## Architecture
 
-- **Backend**: Ruby on Rails 7.2 API
-- **Frontend**: Angular 19 standalone components
-- **Database**: MongoDB (via Mongoid ORM)
+### Tech Stack
+- **Backend**: Ruby on Rails 7.2 API-only mode
+- **Frontend**: Angular 19 with standalone components
+- **Database**: MongoDB (via Mongoid ODM)
 - **SMS Provider**: Twilio
-- **Authentication**: Devise + devise-jwt (JWT token-based)
-- **Containerization**: Docker & Docker Compose for local development
+- **Authentication**: Devise + devise-jwt (JWT tokens)
+- **Containerization**: Docker & Docker Compose
+
+### System Design
+
+#### High-Level Flow
+```
+Client Browser (Angular)
+        ↓
+   [Auth Service] ← → [Auth Endpoints] (Rails)
+        ↓                   ↓
+   [Messenger UI]      [User Model]
+        ↓                (MongoDB)
+   [Message Service]  ← → [Messages Controller] 
+        ↓                   ↓
+   [Compose/List]     [Message Model]
+                            ↓
+                  [TwilioSenderService]
+                            ↓
+                      Twilio API
+```
+
+#### Data Models
+
+**User**
+- Email (unique, indexed)
+- Encrypted password (via Devise)
+- Timestamps (created_at, updated_at)
+- Relationships: has_many messages
+
+**Message**
+- `to`: Recipient phone number
+- `body`: Message content (max 1600 chars)
+- `status`: One of [queued, sent, delivered, failed]
+- `twilio_sid`: Unique Twilio message identifier
+- `error_message`: Error details if status is failed
+- `user_id`: Foreign key to User
+- `created_at`: Message creation timestamp
+- Indexes: (user_id, created_at) for efficient queries; twilio_sid for webhook lookups
+
+#### Authentication Flow
+
+1. **Signup/Login**
+   - User submits email & password to `/signup` or `/login`
+   - Rails validates credentials and generates JWT token
+   - Token returned in Authorization header
+   - Token stored in browser localStorage
+   - Auth interceptor attaches token to all subsequent requests
+
+2. **Route Protection**
+   - `authGuard` on MessengerComponent prevents unauthorized access
+   - Unauthenticated users redirected to login page
+   - Token validation happens client-side (presence check) and server-side (Devise)
+
+#### Message Lifecycle
+
+1. **Composition** (Frontend)
+   - User enters phone number and message in ComposeBoxComponent
+   - Form validates phone number format and message length
+
+2. **Sending** (Backend)
+   - Frontend POSTs to `/messages` with `{message: {to, body}}`
+   - MessagesController creates Message record with status: 'queued'
+   - TwilioSenderService immediately sends via Twilio API
+   - On success: status updated to 'sent', twilio_sid stored
+   - On failure: status set to 'failed', error_message recorded
+
+3. **Status Updates**
+   - In production, Twilio sends webhook callbacks to `/webhooks/twilio/status`
+   - Updates message status to 'delivered' or 'failed' based on callback
+   - (Note: Local development doesn't receive webhooks; status stays 'sent')
+
+4. **Display** (Frontend)
+   - MessageListComponent fetches messages via GET /messages
+   - Returns user's messages ordered by created_at (newest first)
+   - MessageCardComponent displays each message with status badge
+   - Auto-refreshes or updates after compose success
+
+#### API Endpoints
+
+| Method | Endpoint | Auth | Purpose |
+|--------|----------|------|---------|
+| POST | `/signup` | No | Create user account |
+| POST | `/login` | No | Authenticate & get JWT |
+| DELETE | `/logout` | Yes | Clear auth session |
+| GET | `/messages` | Yes | List user's messages |
+| POST | `/messages` | Yes | Send new message |
+| POST | `/webhooks/twilio/status` | No | Receive delivery status updates |
+
+#### Frontend Component Architecture
+
+```
+AppComponent (routes)
+├── LoginComponent (email/password form)
+└── MessengerComponent (protected)
+    ├── ComposeBoxComponent (form input)
+    │   └── AuthService, MessageService
+    ├── MessageListComponent (display)
+    │   ├── MessageCardComponent (individual message)
+    │   └── MessageService
+    └── Logout button
+```
+
+#### Cross-Origin Communication
+
+- Frontend runs on `localhost:4200`
+- Backend runs on `localhost:3000`
+- CORS configured via `config/initializers/cors.rb`
+- Credentials (Authorization header) included in all requests
+- Responses always include Content-Type: application/json
 
 ## Prerequisites
 
@@ -111,12 +220,32 @@ See [DEPLOY.md](DEPLOY.md) for Render.com deployment instructions.
 - **Trial Message Prefix**: Messages include "Sent from a Twilio trial account"
 - **Status Updates**: Local development doesn't receive Twilio webhooks (set `TWILIO_STATUS_CALLBACK_URL` during deploy)
 
+## Design Decisions
+
+### Backend Choices
+- **Rails API-only** over full Rails: Cleaner separation of concerns, smaller footprint since we're not rendering HTML
+- **Mongoid ODM** over ActiveRecord: Document-based storage better matches the flexible nature of messages and user data; easier scaling for a messaging system
+- **Service Object Pattern** (TwilioSenderService): Isolates external service logic from controller, making it testable and reusable
+- **JWT Authentication** over sessions: Stateless auth for API-only applications; tokens can be used across domains
+
+### Frontend Choices
+- **Angular Standalone Components**: Modern approach without NgModules; cleaner, more intuitive component structure
+- **Angular Signals**: Fine-grained reactivity; better performance than observables for simple state (UI loading, error messages)
+- **Functional Route Guards**: Composable auth checks at route level; prevents unauthorized access before component initialization
+- **Auth Interceptor**: Centralized token injection into all requests; single source of truth for authentication header
+
+### Infrastructure
+- **Docker Compose**: Local development mirrors production environment; easy onboarding
+- **MongoDB Atlas URI support**: Flexible database configuration for dev/staging/prod
+- **Twilio Free Trial**: Full SMS functionality without paid integration during development
+
 ## Development Notes
 
 - **Backend**: Rails API-only mode with Mongoid (no ActiveRecord)
 - **Frontend**: Angular standalone components with functional route guards
 - **Auth**: Devise with JWT tokens stored in browser localStorage
 - **CORS**: Configured to allow cross-origin requests from frontend to backend
+- **Webhook Handling**: Local dev doesn't receive Twilio webhooks (no public IP); production requires `TWILIO_STATUS_CALLBACK_URL`
 
 ## Testing
 
