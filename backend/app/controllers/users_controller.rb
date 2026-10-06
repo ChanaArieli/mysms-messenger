@@ -1,6 +1,4 @@
 class UsersController < ApplicationController
-  before_action :authenticate_user!, only: [:me]
-
   def me
     response.headers['Content-Type'] = 'application/json'
     response.status = 200

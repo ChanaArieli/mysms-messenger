@@ -1,5 +1,7 @@
 module Users
   class RegistrationsController < Devise::RegistrationsController
+    skip_before_action :authenticate_user!
+
     def create
       request_body = request.body.string
       body = JSON.parse(request_body)

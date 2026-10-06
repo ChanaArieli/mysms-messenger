@@ -2,6 +2,8 @@ class ApplicationController < ActionController::API
   include ActionController::MimeResponds
   include Devise::Controllers::Helpers
 
+  before_action :authenticate_user!
+
   def authenticate_user!
     token = extract_token_from_request
 

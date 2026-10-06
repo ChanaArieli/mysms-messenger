@@ -1,5 +1,6 @@
 module Users
   class SessionsController < Devise::SessionsController
+    skip_before_action :authenticate_user!
     skip_before_action :verify_signed_out_user, only: :destroy
 
     def create
