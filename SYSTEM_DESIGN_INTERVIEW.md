@@ -2081,6 +2081,299 @@ redis.publish("user:#{user.id}:messages", {
 
 ---
 
+## Question 12: Session Validation Strategy on App Initialization
+
+**Q: When a user refreshes the page or reopens the app, how should you validate that their session is still valid? What are the trade-offs between different approaches?**
+
+### Answer:
+
+**Problem Statement:**
+
+When a frontend app loads and finds a stored token (in localStorage, sessionStorage, or cookies):
+- Token might be expired
+- Token might be revoked (user logged out from another device)
+- Backend state might have changed (user deleted, permissions revoked)
+- Simply trusting stored tokens creates security risk
+
+**Four Common Approaches:**
+
+### Approach 1: JWT-Only (Self-Validating) ❌
+```typescript
+// Check token exists and isn't locally expired
+if (storedToken && !isExpired(storedToken)) {
+  setLoggedIn(true);
+  // Don't call backend
+}
+```
+
+**Pros:**
+- Zero server calls on init
+- Fastest app startup
+- Stateless (no backend session store needed)
+
+**Cons:**
+- ❌ Can't detect revoked tokens (user logged out from another device)
+- ❌ Can't detect permission changes
+- ❌ Your original issue: session never truly expires
+- ❌ If backend revokes token, client won't know until token actually expires
+- ❌ High security risk for critical apps
+
+**When to use:** Low-risk features (analytics, public content), development
+
+---
+
+### Approach 2: Refresh Token + Call /Me (What I Implemented) ⭐ Good for Security
+```typescript
+// On app init
+if (accessToken) {
+  // Option A: Try to refresh (preferred for stateful sessions)
+  // Option B: Validate with /me (implemented in this app)
+  validateWithBackend();  // GET /me (returns 401 if token invalid)
+}
+
+// GET /me endpoint
+Backend validates access token signature and state
+Returns 200 { user: {...} } if valid
+Returns 401 if expired/revoked/invalid
+```
+
+**Pros:**
+- ✅ Detects revoked tokens immediately
+- ✅ Detects permission changes
+- ✅ Always synced with backend state
+- ✅ Secure: backend has final say
+
+**Cons:**
+- Extra HTTP request on every app load
+- User sees loading state during validation
+- Doesn't extend session (user re-authenticates after expiry)
+- If /me is slow, app load is slow
+
+**When to use:** Security-critical apps (banking, messaging, healthcare)
+
+**Latency Impact:**
+- /me endpoint: ~50-200ms (database query)
+- Total app init: +50-200ms to first render
+- Acceptable for most UX (users expect ~1-2s load)
+
+---
+
+### Approach 3: Refresh Token Pattern (Industry Standard) ✅ Best Overall
+```typescript
+// On app init
+if (refreshToken) {
+  try {
+    newAccessToken = await POST /refresh { refreshToken }
+    // Backend validates refresh token, issues new access token
+    // If refresh fails (401), redirect to login
+  } catch (err) {
+    if (err.status === 401) {
+      redirectToLogin();  // Refresh token expired
+    }
+  }
+}
+// Then call /me if needed to get user details
+```
+
+**Token Flow:**
+```
+Login:
+  POST /login → issues access_token (15-min) + refresh_token (7-day)
+
+App Init:
+  Refresh Token exists?
+    YES → POST /refresh → get new access_token (extends session)
+    NO → redirect to login
+
+Request:
+  GET /api/messages + access_token
+  Access token expired?
+    YES → POST /refresh → get new access_token → retry request
+    NO → proceed
+
+Logout:
+  DELETE /logout → increment refresh_token version → redirect to login
+```
+
+**Pros:**
+- ✅ Industry standard (used by Google, GitHub, AWS, Facebook)
+- ✅ Automatically extends sessions (user stays logged in)
+- ✅ Detects revoked tokens (version mismatch on refresh)
+- ✅ Short-lived access tokens (15-60 min) = safer
+- ✅ Long-lived refresh tokens (7-30 days) = better UX
+- ✅ Single HTTP call on init (refresh), not validation
+- ✅ Can auto-retry requests with new token
+
+**Cons:**
+- More complex (2 tokens, refresh endpoint, retry logic)
+- Need token versioning in database (for revocation)
+- Refresh token needs httpOnly cookie (not localStorage)
+
+**When to use:** Most production apps (you should migrate to this)
+
+---
+
+### Approach 4: Server-Side Sessions (Traditional)
+```
+Login:
+  POST /login → create session in database
+  Set Set-Cookie: session_id=<uuid>; HttpOnly; Secure
+
+App Init:
+  Browser automatically sends session_id cookie
+  First request: GET /messages + session_id cookie
+  Backend validates session exists in database
+  No special init logic needed (implicit via cookies)
+
+Logout:
+  DELETE /logout → delete session from database
+  Set-Cookie: session_id=; Max-Age=0
+```
+
+**Pros:**
+- ✅ Simplest for SPAs (browser handles cookies automatically)
+- ✅ Server has full control (can revoke instantly)
+- ✅ No need for refresh token logic
+
+**Cons:**
+- ❌ Requires database lookup on every request (slower)
+- ❌ Doesn't scale without distributed session store (Redis)
+- ❌ Not ideal for mobile/APIs (cookies are browser-specific)
+- ❌ CSRF risk (though mitigated with SameSite)
+
+**When to use:** Traditional server-rendered apps, high security requirement
+
+---
+
+## Comparison Table
+
+| Approach | Init Calls | Detect Revoked | Session Extends | Complexity | Latency | Security |
+|----------|-----------|----------------|-----------------|-----------|---------|----------|
+| **JWT-Only** | 0 | ❌ No | ❌ No | Low | Fast | Low |
+| **Validate /me** | 1 | ✅ Yes | ❌ No | Medium | +50-200ms | High |
+| **Refresh Token** | 1 | ✅ Yes | ✅ Yes | High | +50-100ms | Highest |
+| **Server Sessions** | 1 | ✅ Yes | ✅ Yes | Medium | +10-50ms* | High |
+
+*Depends on session store (Redis vs. Database)
+
+---
+
+## Recommendation & Migration Path
+
+**Current Implementation (Validate /me):**
+- ✅ Good for security
+- ⚠️ Doesn't extend sessions (issue you reported)
+- ⚠️ Extra init latency
+
+**Migration Path:**
+
+**Phase 1 (Now):** Keep /me validation
+- Immediate security fix
+- Detects revoked tokens
+- Documented for interview
+
+**Phase 2 (3 months):** Add Refresh Token Pattern
+- Backend: implement /refresh endpoint with token versioning
+- Frontend: use refresh token on init instead of /me
+- Auto-retry failed requests with new token
+
+**Phase 3 (6 months):** Store tokens in httpOnly cookies
+- Migrate from localStorage to cookies (backend sets via Set-Cookie)
+- Removes XSS vulnerability
+- Browser handles token sending automatically
+
+**Code Changes for Phase 2:**
+
+Backend:
+```ruby
+# app/controllers/sessions_controller.rb
+def refresh
+  token = decode_jwt(request.cookies[:refresh_token])
+  user = User.find(token.user_id)
+  
+  # Check if token was revoked (version mismatch)
+  if user.refresh_token_version != token.version
+    return 401  # Token revoked on another device
+  end
+  
+  # Issue new access token
+  new_access_token = generate_jwt(user, expires_in: 15.minutes)
+  set_auth_cookie(:access_token, new_access_token)
+  render json: { user: user }
+end
+```
+
+Frontend:
+```typescript
+// auth.service.ts
+private async initializeAuth(): Promise<void> {
+  const refreshToken = this.tokenStorage.getRefreshToken();
+  
+  if (refreshToken) {
+    try {
+      // Try to get new access token
+      const response = await this.http.post('/refresh', {}).toPromise();
+      // Backend sets new access_token cookie automatically
+      this.currentUser.set(response.user);
+      this.isLoggedIn.set(true);
+    } catch (error) {
+      if (error.status === 401) {
+        // Refresh token expired or revoked
+        this.clearAuth();
+        this.router.navigate(['/login']);
+      }
+    }
+  }
+  this.isInitialized.set(true);
+}
+```
+
+---
+
+## Key Decision Points for Interviews
+
+**When interviewer asks "How do you validate sessions?"**
+
+Answer structure:
+1. **Identify the problem:** "Stored tokens can become stale or revoked"
+2. **Show trade-offs:** JWT-only vs. /me validation vs. refresh tokens
+3. **Pick one:** "I'd implement refresh tokens for production"
+4. **Explain why:** "Short-lived access tokens + long-lived refresh tokens = security + UX"
+5. **Show migration path:** "Start with /me validation for immediate security, migrate to refresh pattern"
+
+**Red flags to avoid:**
+- ❌ "JWT tokens never expire" (insecure)
+- ❌ "Sessions are validated in localStorage only" (XSS risk)
+- ❌ "I store tokens in localStorage forever" (no token refresh)
+- ✅ "I store tokens in httpOnly cookies" (XSS-safe)
+- ✅ "I validate with backend on init" (this app does this)
+- ✅ "I use refresh tokens to extend sessions" (best practice)
+
+---
+
+## Implementation Decision for This App
+
+**Chosen Approach: Validate with /me endpoint (Approach 2)**
+
+**Why:**
+1. Quick security fix for the reported issue (session persisting after backend restart)
+2. Medium complexity (good for interview demonstration)
+3. Immediately detects revoked tokens
+4. Can be upgraded to Refresh Token pattern later
+
+**Trade-offs Accepted:**
+- ⚠️ Extra 50-200ms on app init (acceptable)
+- ⚠️ Sessions don't auto-extend (users re-authenticate after token expiry)
+- ✅ Secure: backend has final say on validity
+- ✅ Fixes the core issue: stale tokens are rejected
+
+**Future Improvement (Phase 2):**
+- Implement /refresh endpoint with token versioning
+- Migrate to refresh token pattern
+- Extend sessions to 7+ days with auto-refresh
+
+---
+
 ## Summary Table: Evolution by Scale
 
 | Stage | Users | Messages/sec | Architecture Changes |
@@ -2110,8 +2403,9 @@ redis.publish("user:#{user.id}:messages", {
 10. **Real-Time**: Polling is fine until 10k+ users; then consider WebSocket
 11. **Reliability**: Retry logic + idempotency keys prevent duplicate messages
 12. **Monitoring**: APM is critical—track delivery rate, webhook latency, query performance, response times
+13. **Session Validation**: Validate tokens with /me endpoint on app init (security-first approach); migrate to refresh token pattern for production
 
-## Interview Topics Covered (11 Questions)
+## Interview Topics Covered (12 Questions)
 
 1. ✅ Database Scaling & Sharding Strategy
 2. ✅ Indexing & Query Optimization  
@@ -2124,6 +2418,7 @@ redis.publish("user:#{user.id}:messages", {
 9. ✅ **Caching Strategy for Read Performance** ← when to cache vs. optimize queries
 10. ✅ **Read/Write Database Separation** ← replicas vs. CQRS vs. separate DBs
 11. ✅ WebSocket vs. Polling Trade-offs
+12. ✅ **Session Validation on App Init** ← JWT-only vs. /me vs. refresh tokens vs. server sessions
 
 ---
 
