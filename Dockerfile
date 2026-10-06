@@ -50,12 +50,10 @@ COPY backend/ .
 # Set production environment
 ENV RAILS_ENV=production
 ENV NODE_ENV=production
+ENV PORT=3000
 
 # Expose port
 EXPOSE 3000
 
-# Pre-compile assets
-RUN bundle exec rake assets:precompile || true
-
-# Start Rails server
-CMD ["bundle", "exec", "puma", "-b", "tcp://0.0.0.0:3000"]
+# Start Rails server with simplified puma config
+CMD ["bundle", "exec", "puma", "-b", "tcp://0.0.0.0:3000", "-w", "1", "-t", "5:5"]
