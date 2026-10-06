@@ -16,7 +16,7 @@ Rails.application.routes.draw do
   # Health check endpoint for Render
   get 'health', to: 'health#check'
 
-  # TODO: Add Angular static serving once API is stable
-  # get '*path', to: 'static#index', constraints: ->(req) { !req.path.match?(%r{^/api/|^/webhooks/}) }
-  # root 'static#index'
+  # Serve Angular static files
+  get '*path', to: 'static#index', constraints: ->(req) { !req.path.match?(%r{^/api/|^/webhooks/}) }
+  root 'static#index'
 end
