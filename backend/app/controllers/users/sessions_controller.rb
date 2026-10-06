@@ -39,6 +39,7 @@ module Users
       self.response_body = JSON.generate({ errors: { base: 'Invalid JSON' } })
     rescue StandardError => e
       Rails.logger.error("Login error: #{e.class} - #{e.message}")
+      Rails.logger.error(e.backtrace.join("\n"))
       response.headers['Content-Type'] = 'application/json'
       response.status = 401
       self.response_body = JSON.generate({ errors: { base: 'Login failed. Please try again.' } })
