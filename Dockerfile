@@ -52,9 +52,10 @@ ENV RAILS_ENV=production
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV WEB_CONCURRENCY=0
+ENV RAILS_LOG_TO_STDOUT=true
 
 # Expose port
 EXPOSE 3000
 
-# Start Rails server (config from puma.rb)
-CMD ["bundle", "exec", "puma", "-b", "tcp://0.0.0.0:3000"]
+# Start Rails server in single process mode (no workers, no preload)
+CMD ["bundle", "exec", "puma", "-b", "tcp://0.0.0.0:3000", "--workers", "0", "--threads", "2:5"]
