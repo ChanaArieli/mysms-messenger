@@ -30,6 +30,10 @@ module Users
       response.headers['Content-Type'] = 'application/json'
       response.status = 400
       self.response_body = JSON.generate({ errors: { base: 'Invalid JSON' } })
+    rescue StandardError => e
+      response.headers['Content-Type'] = 'application/json'
+      response.status = 401
+      self.response_body = JSON.generate({ errors: { base: "Login failed: #{e.message}" } })
     end
 
     def destroy
